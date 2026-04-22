@@ -34,7 +34,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 {
     private readonly CachingOptions _options;
     private readonly ILogger<ElastiCacheProvider> _logger;
-    private readonly Lazy<ConnectionMultiplexer> _connection;
+    private readonly Lazy<IConnectionMultiplexer> _connection;
     private readonly JsonSerializerOptions _jsonOptions;
 
     /// <summary>
@@ -52,24 +52,36 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         _options = options.Value;
         _logger = logger;
 
-        if (!_options.Validate())
-        {
-            throw new GenesisConfigurationException(
-                nameof(ElastiCacheProvider),
-                "Invalid caching configuration");
-        }
+        ValidateOptions();
 
-        _connection = new Lazy<ConnectionMultiplexer>(() => CreateConnection());
-
-        _jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            WriteIndented = false
-        };
+        _connection = new Lazy<IConnectionMultiplexer>(CreateConnection);
+        _jsonOptions = BuildJsonOptions();
 
         _logger.LogInformation(
             "ElastiCacheProvider initialized with database {Database}",
             _options.Database);
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ElastiCacheProvider"/> class
+    /// with an explicit connection — intended for unit testing only.
+    /// </summary>
+    internal ElastiCacheProvider(
+        IOptions<CachingOptions> options,
+        ILogger<ElastiCacheProvider> logger,
+        IConnectionMultiplexer connection)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(connection);
+
+        _options = options.Value;
+        _logger = logger;
+
+        ValidateOptions();
+
+        _connection = new Lazy<IConnectionMultiplexer>(() => connection);
+        _jsonOptions = BuildJsonOptions();
     }
 
     /// <inheritdoc/>
@@ -203,7 +215,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
             var values = await db.StringGetAsync(redisKeys);
             var result = new Dictionary<string, T?>();
 
-            for (int i = 0; i < keyList.Count; i++)
+            for (var i = 0; i < keyList.Count; i++)
             {
                 result[keyList[i]] = values[i].HasValue
                     ? Deserialize<T>(values[i]!)
@@ -315,7 +327,17 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
     }
 
-    private ConnectionMultiplexer CreateConnection()
+    private void ValidateOptions()
+    {
+        if (!_options.Validate())
+        {
+            throw new GenesisConfigurationException(
+                nameof(ElastiCacheProvider),
+                "Invalid caching configuration");
+        }
+    }
+
+    private IConnectionMultiplexer CreateConnection()
     {
         var configOptions = ConfigurationOptions.Parse(_options.ConnectionString);
         configOptions.ConnectTimeout = _options.ConnectTimeoutMs;
@@ -334,25 +356,18 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         return ConnectionMultiplexer.Connect(configOptions);
     }
 
-    private IDatabase GetDatabase()
-    {
-        return _connection.Value.GetDatabase(_options.Database);
-    }
+    private IDatabase GetDatabase() => _connection.Value.GetDatabase(_options.Database);
 
-    private string GetFullKey(string key)
-    {
-        return string.IsNullOrEmpty(_options.KeyPrefix)
-            ? key
-            : $"{_options.KeyPrefix}:{key}";
-    }
+    private string GetFullKey(string key) =>
+        string.IsNullOrEmpty(_options.KeyPrefix) ? key : $"{_options.KeyPrefix}:{key}";
 
-    private string Serialize<T>(T value)
-    {
-        return JsonSerializer.Serialize(value, _jsonOptions);
-    }
+    private string Serialize<T>(T value) => JsonSerializer.Serialize(value, _jsonOptions);
 
-    private T? Deserialize<T>(string value)
+    private T? Deserialize<T>(string value) => JsonSerializer.Deserialize<T>(value, _jsonOptions);
+
+    private static JsonSerializerOptions BuildJsonOptions() => new()
     {
-        return JsonSerializer.Deserialize<T>(value, _jsonOptions);
-    }
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = false
+    };
 }
