@@ -1,7 +1,4 @@
-// -------------------------------------------------------------------------
-// Copyright (c) 2026 Clarivex Technologies. All rights reserved.
-// Pervaxis Platform - Genesis Edition
-// -------------------------------------------------------------------------
+// Copyright © Clarivex Technologies. All rights reserved.
 
 namespace Pervaxis.Genesis.Base.Exceptions;
 
