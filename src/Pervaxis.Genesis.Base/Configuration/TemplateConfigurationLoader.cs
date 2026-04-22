@@ -1,7 +1,4 @@
-// -------------------------------------------------------------------------
-// Copyright (c) 2026 Clarivex Technologies. All rights reserved.
-// Pervaxis Platform - Genesis Edition
-// -------------------------------------------------------------------------
+// Copyright © Clarivex Technologies. All rights reserved.
 
 using System.Reflection;
 using System.Text.Json;
