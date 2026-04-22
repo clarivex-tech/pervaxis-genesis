@@ -50,14 +50,14 @@
 
 ### Task 2.1: Pervaxis.Genesis.Caching (ElastiCache Redis)
 
-#### 2.1.1 Project Setup
-- [ ] Create folder structure: `Abstractions/`, `Options/`, `Extensions/`, `Providers/ElastiCache/`
-- [ ] Add NuGet packages:
-  - [ ] AWSSDK.ElastiCacheCluster (version: 3.7.400+)
-  - [ ] StackExchange.Redis (version: 2.8.0+)
-  - [ ] Microsoft.Extensions.* (DI, Logging, Options)
-- [ ] Add project reference to `Pervaxis.Genesis.Base`
-- [ ] Document dependencies with justification comments
+#### 2.1.1 Project Setup ✅
+- [x] Create folder structure: `Abstractions/`, `Options/`, `Extensions/`, `Providers/ElastiCache/`
+- [x] Add NuGet packages:
+  - [x] AWSSDK.ElastiCache (version: 3.7.401)
+  - [x] StackExchange.Redis (version: 2.8.16)
+  - [x] Microsoft.Extensions.* (DI, Logging, Options, Configuration)
+- [x] Add project reference to `Pervaxis.Genesis.Base`
+- [x] Document dependencies with justification comments
 
 #### 2.1.2 Implementation
 - [ ] Create `ICache` interface in `Abstractions/`
