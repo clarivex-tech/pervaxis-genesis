@@ -14,6 +14,8 @@ jobs:
   build-test-scan:
     name: Build · Test · SonarQube
     runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -24,7 +26,7 @@ jobs:
           dotnet-version: "10.x"
 
       - name: Setup Java 17
-        if: github.base_ref == 'main'
+        if: github.base_ref == 'main' && env.SONAR_TOKEN != ''
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -37,21 +39,19 @@ jobs:
           restore-keys: ${{ runner.os }}-nuget-
 
       - name: Install SonarScanner
-        if: github.base_ref == 'main'
+        if: github.base_ref == 'main' && env.SONAR_TOKEN != ''
         run: dotnet tool install --global dotnet-sonarscanner
 
       - run: dotnet restore Pervaxis.Genesis.slnx
 
       - name: SonarQube begin
-        if: github.base_ref == 'main'
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        if: github.base_ref == 'main' && env.SONAR_TOKEN != ''
         run: |
           dotnet sonarscanner begin \
             /k:"pervaxis-genesis" \
             /o:"pervaxis" \
             /d:sonar.host.url="https://sonarcloud.io" \
-            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.token="${{ env.SONAR_TOKEN }}" \
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml" \
             /d:sonar.exclusions=".github/**,**/obj/**,**/*.g.cs" \
             /d:sonar.coverage.exclusions="**/obj/**,**/*.g.cs" \
@@ -69,10 +69,8 @@ jobs:
             -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
 
       - name: SonarQube end
-        if: github.base_ref == 'main'
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
+        if: github.base_ref == 'main' && env.SONAR_TOKEN != ''
+        run: dotnet sonarscanner end /d:sonar.token="${{ env.SONAR_TOKEN }}"
 
       - uses: actions/upload-artifact@v5
         if: always()
