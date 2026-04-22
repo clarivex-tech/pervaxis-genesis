@@ -19,7 +19,7 @@
 
   <ItemGroup>
     <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, etc.) -->
-    <ProjectReference Include="..\..\..\..\Pervaxis\Platform\pervaxis-core\src\Pervaxis.Core.Abstractions\Pervaxis.Core.Abstractions.csproj" />
+    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.0.0" />
   </ItemGroup>
 
 </Project>
