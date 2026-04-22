@@ -35,6 +35,7 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_NOLOGO: true
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   publish:
@@ -85,12 +86,12 @@ jobs:
 
       # ── Restore ──────────────────────────────────────────────────────────
       - name: Restore dependencies
-        run: dotnet restore Genesis.sln
+        run: dotnet restore Pervaxis.Genesis.slnx
 
       # ── Build (Release) ──────────────────────────────────────────────────
       - name: Build
         run: |
-          dotnet build Genesis.sln \
+          dotnet build Pervaxis.Genesis.slnx \
             --configuration Release \
             --no-restore \
             -p:Version=${{ steps.version.outputs.version }} \
@@ -99,7 +100,7 @@ jobs:
       # ── Test (must pass before publish) ──────────────────────────────────
       - name: Test
         run: |
-          dotnet test Genesis.sln \
+          dotnet test Pervaxis.Genesis.slnx \
             --configuration Release \
             --no-build \
             --collect:"XPlat Code Coverage" \
@@ -110,7 +111,7 @@ jobs:
       # Packs all IsPackable=true projects. Symbol packages (.snupkg) included.
       - name: Pack
         run: |
-          dotnet pack Genesis.sln \
+          dotnet pack Pervaxis.Genesis.slnx \
             --configuration Release \
             --no-build \
             --output ./artifacts \
