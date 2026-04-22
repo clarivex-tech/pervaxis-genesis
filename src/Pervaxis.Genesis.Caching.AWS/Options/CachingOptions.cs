@@ -16,9 +16,9 @@
  ************************************************************************
  */
 
-using Pervaxis.Genesis.Base.Options;
+using Pervaxis.Core.Abstractions.Genesis;
 
-namespace Pervaxis.Genesis.Caching.Options;
+namespace Pervaxis.Genesis.Caching.AWS.Options;
 
 /// <summary>
 /// Configuration options for the Genesis Caching provider (ElastiCache Redis).
@@ -28,7 +28,7 @@ public sealed class CachingOptions : GenesisOptionsBase
     /// <summary>
     /// Gets or sets the Redis connection string.
     /// For ElastiCache: clustername.cache.amazonaws.com:6379
-    /// For LocalStack: localhost:6379
+    /// For local emulator: localhost:6379
     /// </summary>
     public string ConnectionString { get; set; } = string.Empty;
 

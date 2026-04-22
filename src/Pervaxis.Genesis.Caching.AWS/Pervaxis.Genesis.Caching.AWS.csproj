@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Reference to Genesis Base project -->
+    <!-- Reference to Genesis Base project (also transitively provides Pervaxis.Core.Abstractions) -->
     <ProjectReference Include="..\Pervaxis.Genesis.Base\Pervaxis.Genesis.Base.csproj" />
   </ItemGroup>
 

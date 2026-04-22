@@ -19,12 +19,12 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Genesis.Base.Exceptions;
-using Pervaxis.Genesis.Caching.Abstractions;
-using Pervaxis.Genesis.Caching.Options;
+using Pervaxis.Genesis.Caching.AWS.Options;
 using StackExchange.Redis;
 
-namespace Pervaxis.Genesis.Caching.Providers.ElastiCache;
+namespace Pervaxis.Genesis.Caching.AWS.Providers.ElastiCache;
 
 /// <summary>
 /// ElastiCache (Redis) implementation of the caching provider.
@@ -323,10 +323,10 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         configOptions.AbortOnConnectFail = _options.AbortOnConnectFail;
         configOptions.Ssl = _options.UseSsl;
 
-        if (_options.UseLocalStack)
+        if (_options.UseLocalEmulator)
         {
             configOptions.Ssl = false;
-            _logger.LogInformation("Using LocalStack mode - SSL disabled");
+            _logger.LogInformation("Using local emulator mode - SSL disabled");
         }
 
         _logger.LogInformation("Connecting to Redis: {Endpoint}", configOptions.EndPoints[0]);

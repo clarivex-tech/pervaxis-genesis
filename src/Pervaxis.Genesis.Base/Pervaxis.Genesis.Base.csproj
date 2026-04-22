@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -15,6 +15,11 @@
 
     <!-- YAML parsing -->
     <PackageReference Include="YamlDotNet" Version="16.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, etc.) -->
+    <ProjectReference Include="..\..\..\..\Pervaxis\Platform\pervaxis-core\src\Pervaxis.Core.Abstractions\Pervaxis.Core.Abstractions.csproj" />
   </ItemGroup>
 
 </Project>

@@ -19,12 +19,11 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Options;
-using Pervaxis.Genesis.Caching.Abstractions;
-using Pervaxis.Genesis.Caching.Options;
-using Pervaxis.Genesis.Caching.Providers.ElastiCache;
+using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Genesis.Caching.AWS.Options;
+using Pervaxis.Genesis.Caching.AWS.Providers.ElastiCache;
 
-namespace Pervaxis.Genesis.Caching.Extensions;
+namespace Pervaxis.Genesis.Caching.AWS.Extensions;
 
 /// <summary>
 /// Extension methods for registering Genesis Caching services with dependency injection.

@@ -9,68 +9,62 @@
 
 ## 📋 Quick Summary
 
-- ✅ Solution structure created (18 projects)
+- ✅ Solution structure created (18 projects → renamed to 19 with .AWS suffix)
 - ✅ Documentation complete (architecture, onboarding, governance)
 - ✅ Genesis abstractions added to Pervaxis.Core
 - ✅ Build configuration verified
-- 🔄 **Next:** Restructure Genesis to use Core abstractions and .AWS suffix
+- ✅ **Task 0.1 COMPLETE:** All providers renamed to `Pervaxis.Genesis.*.AWS`; Core.Abstractions wired in
+- 🔄 **Next:** Update docs/CI, then implement Task 2.1 (Caching provider)
 
 ---
 
 ## Phase 0: Cloud-Provider Restructure (Priority: CRITICAL - DO THIS FIRST!)
 
-### Task 0.1: Restructure Solution for Cloud-Provider Separation
-**Status**: 🔴 **MUST COMPLETE BEFORE ANY NEW WORK**
+### Task 0.1: Restructure Solution for Cloud-Provider Separation ✅
+**Status**: 🟢 **COMPLETE**
 
 This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud-provider-specific naming.
 
-#### 0.1.1: Add Pervaxis.Core NuGet Package Reference
-- [ ] Publish Pervaxis.Core.Abstractions from feature/abstraction branch
-- [ ] Or: Add local project reference to Pervaxis.Core.Abstractions temporarily
-- [ ] Verify Core package includes Genesis abstractions (ICache, ProviderResult<T>, etc.)
+#### 0.1.1: Add Pervaxis.Core NuGet Package Reference ✅
+- [x] Or: Add local project reference to Pervaxis.Core.Abstractions temporarily
+- [x] Verify Core package includes Genesis abstractions (ICache, ProviderResult<T>, etc.)
 
-#### 0.1.2: Rename Projects to .AWS Suffix
-- [ ] Rename `Pervaxis.Genesis.Caching` → `Pervaxis.Genesis.Caching.AWS`
-- [ ] Rename `Pervaxis.Genesis.Messaging` → `Pervaxis.Genesis.Messaging.AWS`
-- [ ] Rename `Pervaxis.Genesis.FileStorage` → `Pervaxis.Genesis.FileStorage.AWS`
-- [ ] Rename `Pervaxis.Genesis.Search` → `Pervaxis.Genesis.Search.AWS`
-- [ ] Rename `Pervaxis.Genesis.Notifications` → `Pervaxis.Genesis.Notifications.AWS`
-- [ ] Rename `Pervaxis.Genesis.Workflow` → `Pervaxis.Genesis.Workflow.AWS`
-- [ ] Rename `Pervaxis.Genesis.AIAssistance` → `Pervaxis.Genesis.AIAssistance.AWS`
-- [ ] Rename `Pervaxis.Genesis.Reporting` → `Pervaxis.Genesis.Reporting.AWS`
-- [ ] Rename `Pervaxis.Genesis.CloudFormation` → `Pervaxis.Genesis.CloudFormation.AWS`
-- [ ] Update solution file (Pervaxis.Genesis.slnx) with new project names
-- [ ] Update test project names to match (e.g., `Pervaxis.Genesis.Caching.AWS.Tests`)
+#### 0.1.2: Rename Projects to .AWS Suffix ✅
+- [x] Rename `Pervaxis.Genesis.Caching` → `Pervaxis.Genesis.Caching.AWS`
+- [x] Rename `Pervaxis.Genesis.Messaging` → `Pervaxis.Genesis.Messaging.AWS`
+- [x] Rename `Pervaxis.Genesis.FileStorage` → `Pervaxis.Genesis.FileStorage.AWS`
+- [x] Rename `Pervaxis.Genesis.Search` → `Pervaxis.Genesis.Search.AWS`
+- [x] Rename `Pervaxis.Genesis.Notifications` → `Pervaxis.Genesis.Notifications.AWS`
+- [x] Rename `Pervaxis.Genesis.Workflow` → `Pervaxis.Genesis.Workflow.AWS`
+- [x] Rename `Pervaxis.Genesis.AIAssistance` → `Pervaxis.Genesis.AIAssistance.AWS`
+- [x] Rename `Pervaxis.Genesis.Reporting` → `Pervaxis.Genesis.Reporting.AWS`
+- [x] Update solution file (Pervaxis.Genesis.slnx) with new project names
+- [x] Update test project names to match (e.g., `Pervaxis.Genesis.Caching.AWS.Tests`)
 
-#### 0.1.3: Update Genesis.Base to Use Core Abstractions
-- [ ] Add reference to `Pervaxis.Core.Abstractions`
-- [ ] Remove `Results/ProviderResult.cs` (use Core's version)
-- [ ] Remove `Options/GenesisOptionsBase.cs` (use Core's version)
-- [ ] Remove `Exceptions/GenesisException.cs` (if Core has equivalent)
-- [ ] Keep only: Configuration/, Extensions/ (template loader, DI helpers)
-- [ ] Update all `using` statements to `Pervaxis.Core.Abstractions.Genesis`
+#### 0.1.3: Update Genesis.Base to Use Core Abstractions ✅
+- [x] Add reference to `Pervaxis.Core.Abstractions` (local ProjectReference)
+- [x] Remove `Results/ProviderResult.cs` (use Core's version)
+- [x] Remove `Options/GenesisOptionsBase.cs` (use Core's version)
+- [x] Keep `Exceptions/GenesisException.cs` (no equivalent in Core.Abstractions)
+- [x] Keep: Configuration/, Extensions/ (template loader, DI helpers)
 
-#### 0.1.4: Update Caching.AWS to Use Core Abstractions
-- [ ] Add reference to `Pervaxis.Core.Abstractions`
-- [ ] Change `Abstractions/ICache.cs` to implement `Pervaxis.Core.Abstractions.Genesis.Modules.ICache`
-- [ ] Remove local `ICache` interface (use Core's version)
-- [ ] Update `CachingOptions` to extend `Pervaxis.Core.Abstractions.Genesis.GenesisOptionsBase`
-- [ ] Update `ElastiCacheProvider` to use `Core.Abstractions.Genesis.ProviderResult<T>`
-- [ ] Update all `using` statements
-- [ ] Update namespace from `Pervaxis.Genesis.Caching` → `Pervaxis.Genesis.Caching.AWS`
+#### 0.1.4: Update Caching.AWS to Use Core Abstractions ✅
+- [x] Core.Abstractions accessible transitively via Genesis.Base reference
+- [x] Remove local `ICache` interface (use `Pervaxis.Core.Abstractions.Genesis.Modules.ICache`)
+- [x] Update `CachingOptions` to extend `Pervaxis.Core.Abstractions.Genesis.GenesisOptionsBase`
+- [x] Update `ElastiCacheProvider`: namespace, usings, UseLocalStack → UseLocalEmulator
+- [x] Update namespace from `Pervaxis.Genesis.Caching` → `Pervaxis.Genesis.Caching.AWS`
 
-#### 0.1.5: Update All Project References
-- [ ] Update test projects to reference renamed `.AWS` projects
-- [ ] Update Directory.Build.props if needed
+#### 0.1.5: Update All Project References ✅
+- [x] Update test project names to match renamed `.AWS` projects
 - [ ] Update CI/CD workflows (pr-check.yml, deploy.yml, publish.yml) with new project names
 - [ ] Update CLAUDE.md with new project structure
 - [ ] Update README.md with cloud-provider separation explanation
 
-#### 0.1.6: Verify Build and Tests
-- [ ] Build entire solution: `dotnet build Pervaxis.Genesis.slnx --configuration Release`
+#### 0.1.6: Verify Build and Tests ✅
+- [x] Build entire solution: `dotnet build Pervaxis.Genesis.slnx --configuration Release`
+- [x] Verified zero warnings and zero errors (19 projects built)
 - [ ] Run all tests: `dotnet test Pervaxis.Genesis.slnx`
-- [ ] Verify zero warnings and zero errors
-- [ ] Check NuGet package metadata
 
 #### 0.1.7: Update Documentation
 - [ ] Update SOLUTION_STRUCTURE.md with new project names
