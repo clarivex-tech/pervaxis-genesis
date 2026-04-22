@@ -10,7 +10,7 @@
 | **Author(s)** | Name, Name |
 | **Target Version** | X.Y.0 (minor) or X.0.0 (major) |
 | **Breaking Change** | Yes / No |
-| **Components** | Pervaxis.Genesis.<Component> |
+| **Spec Sections** | Section XX, Section XX |
 
 ---
 
@@ -22,7 +22,7 @@ _One paragraph. What is being proposed and why? Who does it affect?_
 
 ## Motivation
 
-_What problem does this RFC solve? What is the current limitation, pain point, or capability gap? Link to GitHub Issues or incident reports._
+_What problem does this RFC solve? What is the current limitation, pain point, or capability gap? Link to GitHub Issues, incidents, or spec requirements._
 
 ---
 
@@ -50,32 +50,6 @@ public interface ISomeContract
 
 _Document any changes to `IOptions<T>` shapes, appsettings keys, or environment variables._
 
-**Before:**
-```json
-{
-  "Pervaxis": {
-    "Genesis": {
-      "Component": {
-        "OldKey": "value"
-      }
-    }
-  }
-}
-```
-
-**After:**
-```json
-{
-  "Pervaxis": {
-    "Genesis": {
-      "Component": {
-        "NewKey": "value"
-      }
-    }
-  }
-}
-```
-
 ### Behavioral Changes
 
 _Document any changes to runtime behavior — what was true before, what will be true after._
@@ -83,12 +57,6 @@ _Document any changes to runtime behavior — what was true before, what will be
 ### Migration Path
 
 _How do existing consumers migrate? Step-by-step. Must be completable within the deprecation window (minimum two minor versions)._
-
-1. Upgrade to version X.Y.0
-2. Replace `OldApi()` calls with `NewApi()`
-3. Update configuration keys in `appsettings.json`
-4. Test changes in local environment
-5. Deploy to UAT/staging before production
 
 ---
 
@@ -109,29 +77,6 @@ _What other approaches were evaluated? Why were they rejected?_
 
 ---
 
-## AWS Impact
-
-### Service Changes
-_List any AWS service configuration changes required._
-
-### IAM Permission Changes
-_Document any new IAM permissions required._
-
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "service:NewAction"
-  ],
-  "Resource": "arn:aws:service:region:account:resource/*"
-}
-```
-
-### Cost Impact
-_Estimate any AWS cost implications (API calls, data transfer, storage)._
-
----
-
 ## Rollout Plan
 
 ### Deprecation Window
@@ -146,20 +91,9 @@ _Estimate any AWS cost implications (API calls, data transfer, storage)._
 ### Communication
 
 - [ ] CHANGELOG.md entry drafted
-- [ ] Migration guide created at `docs/migrations/`
-- [ ] Consuming teams notified (list them)
+- [ ] Migration guide updated at `docs/migrations/`
+- [ ] Product teams notified (list them)
 - [ ] Platform changelog PR linked: #XXX
-
----
-
-## Testing Strategy
-
-_How will this change be tested?_
-
-- [ ] Unit tests cover new behavior
-- [ ] Integration tests with LocalStack / AWS dev account
-- [ ] Performance regression tests (if applicable)
-- [ ] Security review (if applicable)
 
 ---
 
@@ -178,4 +112,4 @@ _Who contributed to the design discussion?_
 
 ---
 
-_Pervaxis Platform · Clarivex Technologies · Genesis Edition_
+_Pervaxis Platform · Clarivex Technologies_

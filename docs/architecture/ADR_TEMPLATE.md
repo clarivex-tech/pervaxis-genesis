@@ -6,7 +6,7 @@
 | **Date** | YYYY-MM-DD |
 | **Authors** | Name, Name |
 | **Reviewers** | Name, Name |
-| **Component** | Pervaxis.Genesis.<Component> |
+| **Section** | Pervaxis Platform Spec section(s) this decision addresses |
 
 ---
 
@@ -61,40 +61,14 @@ _Why was this option chosen over the alternatives? What trade-offs were accepted
 
 _Optional. Any specific implementation details, migration steps, or gotchas that future maintainers need to know._
 
-**AWS Service Configuration:**
-```json
-{
-  "Pervaxis": {
-    "Genesis": {
-      "<Component>": {
-        "Region": "ap-south-1",
-        // Component-specific settings
-      }
-    }
-  }
-}
-```
-
-**IAM Permissions Required:**
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "service:Action1",
-    "service:Action2"
-  ],
-  "Resource": "arn:aws:service:region:account:resource/*"
-}
-```
-
 ---
 
 ## Related
 
 - ADR-XXXX — [Related decision]
 - GitHub Issue #XXX — [Related issue]
-- AWS Service Documentation: [link]
+- Spec Section XX — [Referenced section]
 
 ---
 
-_Pervaxis Platform · Clarivex Technologies · Genesis Edition_
+_Pervaxis Platform · Clarivex Technologies_
