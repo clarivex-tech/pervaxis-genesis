@@ -9,6 +9,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build-test-scan:
@@ -40,7 +41,7 @@ jobs:
         if: github.ref_name == 'main' || github.event_name == 'workflow_dispatch'
         run: dotnet tool install --global dotnet-sonarscanner
 
-      - run: dotnet restore Genesis.sln
+      - run: dotnet restore Pervaxis.Genesis.slnx
 
       - name: SonarQube begin
         if: github.ref_name == 'main' || github.event_name == 'workflow_dispatch'
@@ -57,11 +58,11 @@ jobs:
             /d:sonar.coverage.exclusions="**/obj/**,**/*.g.cs" \
             /d:sonar.qualitygate.wait=false
 
-      - run: dotnet build Genesis.sln --no-restore --configuration Release
+      - run: dotnet build Pervaxis.Genesis.slnx --no-restore --configuration Release
 
       - name: Test with coverage
         run: |
-          dotnet test Genesis.sln --no-build --configuration Release \
+          dotnet test Pervaxis.Genesis.slnx --no-build --configuration Release \
             --collect:"XPlat Code Coverage" --results-directory TestResults \
             -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
 
