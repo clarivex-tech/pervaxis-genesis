@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AWS SDK for ElastiCache (configuration discovery only, not required for Redis operations) -->
+    <PackageReference Include="AWSSDK.ElastiCache" Version="3.7.401" />
+
+    <!-- Redis client for cache operations -->
+    <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
+
+    <!-- Microsoft Extensions for DI, Logging, Options, Configuration -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Reference to Genesis Base project (also transitively provides Pervaxis.Core.Abstractions) -->
+    <ProjectReference Include="..\Pervaxis.Genesis.Base\Pervaxis.Genesis.Base.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pervaxis.Genesis.Caching.AWS.Tests" />
+  </ItemGroup>
+
+</Project>

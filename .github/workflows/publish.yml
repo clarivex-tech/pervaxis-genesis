@@ -1,0 +1,168 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Pervaxis Genesis — NuGet Publish Workflow
+#
+# Triggers:
+#   - Push to any release/* branch (pre-release candidate publish)
+#   - Push of a version tag v*.*.* (stable release publish)
+#
+# Publish targets:
+#   - GitHub Packages (always) — internal feed for platform consumers
+#
+# Semantic versioning is driven by Directory.Build.props <Version>.
+# This workflow does NOT bump versions — that is a manual step via PR to
+# Directory.Build.props before tagging, following Conventional Commits.
+# ──────────────────────────────────────────────────────────────────────────
+
+name: Publish NuGet Packages
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'          # stable:     v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'         # pre-release: v1.2.3-rc.1
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: 'Pre-release suffix (e.g. rc.1, beta.2). Leave blank for stable.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write   # required to push to GitHub Packages
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
+
+jobs:
+  publish:
+    name: Pack and publish NuGet packages
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # full history for InformationalVersion + git describe
+
+      # ── .NET SDK ────────────────────────────────────────────────────────
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.x'
+
+      # ── Resolve version ──────────────────────────────────────────────────
+      # For tag pushes the version comes from the tag (strip leading 'v').
+      # For manual dispatch it comes from Directory.Build.props + optional suffix.
+      - name: Resolve package version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            # Read VersionPrefix from Directory.Build.props
+            PREFIX=$(grep -oP '(?<=<VersionPrefix>)[^<]+' Directory.Build.props | head -1 | tr -d '[:space:]')
+            SUFFIX="${{ github.event.inputs.version_suffix }}"
+            if [[ -n "$SUFFIX" ]]; then
+              echo "version=${PREFIX}-${SUFFIX}" >> "$GITHUB_OUTPUT"
+            else
+              echo "version=${PREFIX}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "Resolved version: $(cat $GITHUB_OUTPUT | grep version | cut -d= -f2)"
+
+      # ── NuGet cache ──────────────────────────────────────────────────────
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # ── Restore ──────────────────────────────────────────────────────────
+      - name: Restore dependencies
+        run: dotnet restore Pervaxis.Genesis.slnx
+
+      # ── Build (Release) ──────────────────────────────────────────────────
+      - name: Build
+        run: |
+          dotnet build Pervaxis.Genesis.slnx \
+            --configuration Release \
+            --no-restore \
+            -p:Version=${{ steps.version.outputs.version }} \
+            -p:SourceRevisionId=${{ github.sha }}
+
+      # ── Test (must pass before publish) ──────────────────────────────────
+      - name: Test
+        run: |
+          dotnet test Pervaxis.Genesis.slnx \
+            --configuration Release \
+            --no-build \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./coverage \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+
+      # ── Pack ─────────────────────────────────────────────────────────────
+      # Packs all IsPackable=true projects. Symbol packages (.snupkg) included.
+      - name: Pack
+        run: |
+          dotnet pack Pervaxis.Genesis.slnx \
+            --configuration Release \
+            --no-build \
+            --output ./artifacts \
+            -p:Version=${{ steps.version.outputs.version }} \
+            -p:IncludeSymbols=true \
+            -p:SymbolPackageFormat=snupkg
+
+      # ── List artifacts ────────────────────────────────────────────────────
+      - name: List packages
+        run: ls -la ./artifacts/
+
+      # ── Publish to GitHub Packages ────────────────────────────────────────
+      - name: Publish .nupkg to GitHub Packages
+        run: |
+          dotnet nuget push "./artifacts/*.nupkg" \
+            --api-key ${{ secrets.GITHUB_TOKEN }} \
+            --source "https://nuget.pkg.github.com/clarivex-tech/index.json" \
+            --skip-duplicate
+
+      - name: Publish .snupkg symbol packages to GitHub Packages
+        run: |
+          dotnet nuget push "./artifacts/*.snupkg" \
+            --api-key ${{ secrets.GITHUB_TOKEN }} \
+            --source "https://nuget.pkg.github.com/clarivex-tech/index.json" \
+            --skip-duplicate
+
+      # ── Upload artifacts ──────────────────────────────────────────────────
+      - name: Upload NuGet artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: nuget-packages-${{ steps.version.outputs.version }}
+          path: ./artifacts/
+          retention-days: 90
+
+      # ── Create GitHub Release (stable tags only) ──────────────────────────
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Pervaxis Genesis ${{ github.ref_name }}
+          body: |
+            ## Pervaxis Genesis ${{ github.ref_name }}
+
+            See [CHANGELOG.md](https://github.com/clarivex-tech/pervaxis-genesis/blob/main/CHANGELOG.md) for release notes.
+
+            ### NuGet Packages
+            Install from GitHub Packages:
+            ```
+            dotnet add package Pervaxis.Genesis.Aws.CloudFormation --version ${{ steps.version.outputs.version }}
+            ```
+          files: ./artifacts/*.nupkg
+          draft: false
+          prerelease: false

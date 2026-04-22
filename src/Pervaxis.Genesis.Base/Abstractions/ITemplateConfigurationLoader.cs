@@ -1,0 +1,65 @@
+/*
+ ************************************************************************
+ * Copyright (C) 2026 Clarivex Technologies Private Limited
+ * All Rights Reserved.
+ *
+ * NOTICE: All intellectual and technical concepts contained
+ * herein are proprietary to Clarivex Technologies Private Limited
+ * and may be covered by Indian and Foreign Patents,
+ * patents in process, and are protected by trade secret or
+ * copyright law. Dissemination of this information or reproduction
+ * of this material is strictly forbidden unless prior written
+ * permission is obtained from Clarivex Technologies Private Limited.
+ *
+ * Product:   Pervaxis Platform
+ * Website:   https://clarivex.tech
+ ************************************************************************
+ */
+
+namespace Pervaxis.Genesis.Base.Abstractions;
+
+/// <summary>
+/// Defines methods for loading and parsing template configuration files.
+/// Supports JSON and YAML formats for AWS CloudFormation, Terraform, and other IaC templates.
+/// </summary>
+public interface ITemplateConfigurationLoader
+{
+    /// <summary>
+    /// Loads a template configuration from a file path.
+    /// </summary>
+    /// <param name="filePath">The path to the template file.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The parsed template as a dictionary.</returns>
+    Task<IDictionary<string, object>> LoadFromFileAsync(
+        string filePath,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Loads a template configuration from a string content.
+    /// </summary>
+    /// <param name="content">The template content.</param>
+    /// <param name="format">The format of the template (json or yaml).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The parsed template as a dictionary.</returns>
+    Task<IDictionary<string, object>> LoadFromStringAsync(
+        string content,
+        string format,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Loads a template configuration from an embedded resource.
+    /// </summary>
+    /// <param name="resourceName">The fully qualified resource name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The parsed template as a dictionary.</returns>
+    Task<IDictionary<string, object>> LoadFromResourceAsync(
+        string resourceName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Validates a template configuration against a schema.
+    /// </summary>
+    /// <param name="template">The template to validate.</param>
+    /// <returns>True if valid, false otherwise.</returns>
+    bool ValidateTemplate(IDictionary<string, object> template);
+}

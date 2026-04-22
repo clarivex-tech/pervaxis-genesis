@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Pervaxis.Genesis.AIAssistance.AWS/Pervaxis.Genesis.AIAssistance.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Base/Pervaxis.Genesis.Base.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Caching.AWS/Pervaxis.Genesis.Caching.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.FileStorage.AWS/Pervaxis.Genesis.FileStorage.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Messaging.AWS/Pervaxis.Genesis.Messaging.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Notifications.AWS/Pervaxis.Genesis.Notifications.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Reporting.AWS/Pervaxis.Genesis.Reporting.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Search.AWS/Pervaxis.Genesis.Search.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Workflow.AWS/Pervaxis.Genesis.Workflow.AWS.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pervaxis.Genesis.AIAssistance.AWS.Tests/Pervaxis.Genesis.AIAssistance.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Base.Tests/Pervaxis.Genesis.Base.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Caching.AWS.Tests/Pervaxis.Genesis.Caching.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.FileStorage.AWS.Tests/Pervaxis.Genesis.FileStorage.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Messaging.AWS.Tests/Pervaxis.Genesis.Messaging.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Notifications.AWS.Tests/Pervaxis.Genesis.Notifications.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Reporting.AWS.Tests/Pervaxis.Genesis.Reporting.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Search.AWS.Tests/Pervaxis.Genesis.Search.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Workflow.AWS.Tests/Pervaxis.Genesis.Workflow.AWS.Tests.csproj" />
+  </Folder>
+</Solution>

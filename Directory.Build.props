@@ -1,0 +1,61 @@
+<Project>
+
+  <!-- ── Build settings ─────────────────────────────────────────────────── -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisMode>All</AnalysisMode>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- ── Semantic versioning ────────────────────────────────────────────── -->
+  <!--
+    Bump rules (Conventional Commits → version):
+      feat:     minor version increment  (1.0.0 → 1.1.0)
+      fix:      patch version increment  (1.0.0 → 1.0.1)
+      breaking: major version increment  (1.0.0 → 2.0.0)
+    Set Version here only. Never set it individually in .csproj files.
+  -->
+  <PropertyGroup>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <!-- VersionSuffix is empty for stable releases; set to e.g. "rc.1" for pre-releases -->
+    <VersionSuffix></VersionSuffix>
+    <AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
+    <FileVersion>$(VersionPrefix).0</FileVersion>
+    <InformationalVersion>$(Version)+$(SourceRevisionId)</InformationalVersion>
+  </PropertyGroup>
+
+  <!-- ── NuGet package identity ─────────────────────────────────────────── -->
+  <PropertyGroup>
+    <Authors>Clarivex Technologies</Authors>
+    <Owners>Clarivex Technologies</Owners>
+    <Company>Clarivex Technologies</Company>
+    <Product>Pervaxis Platform - Genesis Edition</Product>
+    <Copyright>Copyright © 2026 Clarivex Technologies Private Limited. All rights reserved.</Copyright>
+    <PackageProjectUrl>https://clarivex.tech/pervaxis/genesis</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/clarivex-tech/pervaxis-genesis</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>pervaxis;clarivex;enterprise;platform;dotnet;microservices;aws;genesis</PackageTags>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <!-- ── NuGet packability ──────────────────────────────────────────────── -->
+  <PropertyGroup Condition="'$(IsTestProject)' != 'true'">
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <!-- Include README.md alongside each packable project -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true' and Exists('README.md')">
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
