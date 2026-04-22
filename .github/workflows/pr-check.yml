@@ -1,0 +1,82 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
+
+jobs:
+  build-test-scan:
+    name: Build · Test · SonarQube
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.x"
+
+      - name: Setup Java 17
+        if: github.base_ref == 'main'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Install SonarScanner
+        if: github.base_ref == 'main'
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - run: dotnet restore Pervaxis.Genesis.slnx
+
+      - name: SonarQube begin
+        if: github.base_ref == 'main'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          dotnet sonarscanner begin \
+            /k:"pervaxis-genesis" \
+            /o:"pervaxis" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml" \
+            /d:sonar.exclusions=".github/**,**/obj/**,**/*.g.cs" \
+            /d:sonar.coverage.exclusions="**/obj/**,**/*.g.cs" \
+            /d:sonar.pullrequest.key="${{ github.event.pull_request.number }}" \
+            /d:sonar.pullrequest.branch="${{ github.head_ref }}" \
+            /d:sonar.pullrequest.base="${{ github.base_ref }}" \
+            /d:sonar.qualitygate.wait=false
+
+      - run: dotnet build Pervaxis.Genesis.slnx --no-restore --configuration Release
+
+      - name: Test with coverage
+        run: |
+          dotnet test Pervaxis.Genesis.slnx --no-build --configuration Release \
+            --collect:"XPlat Code Coverage" --results-directory TestResults \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+
+      - name: SonarQube end
+        if: github.base_ref == 'main'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: pr-test-results-${{ github.run_id }}
+          path: TestResults/
+          retention-days: 7
