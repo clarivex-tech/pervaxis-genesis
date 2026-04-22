@@ -26,4 +26,8 @@
     <ProjectReference Include="..\Pervaxis.Genesis.Base\Pervaxis.Genesis.Base.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pervaxis.Genesis.Caching.AWS.Tests" />
+  </ItemGroup>
+
 </Project>

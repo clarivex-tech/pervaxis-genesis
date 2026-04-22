@@ -9,6 +9,10 @@
     <IsPackable>false</IsPackable>
     <!-- Test projects don't need XML documentation -->
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- Relax analysis for test projects: standard test conventions
+         (underscore names, nested classes, public test types, disposable
+         test doubles, and per-test serializer instances) are valid -->
+    <NoWarn>$(NoWarn);CA1707;CA1034;CA1515;CA2000;CA1869</NoWarn>
   </PropertyGroup>
 
 </Project>

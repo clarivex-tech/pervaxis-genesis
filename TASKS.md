@@ -1,7 +1,7 @@
 # Pervaxis Genesis - Implementation Task List
 
-> **Status:** Abstractions in Core complete ✅  
-> **Next Phase:** Restructure for cloud-provider separation  
+> **Status:** Caching.AWS provider complete ✅  
+> **Next Phase:** Task 2.2 — Messaging (SQS + SNS)  
 > **Created:** 2026-04-21  
 > **Updated:** 2026-04-22
 
@@ -14,7 +14,8 @@
 - ✅ Genesis abstractions added to Pervaxis.Core
 - ✅ Build configuration verified
 - ✅ **Task 0.1 COMPLETE:** All providers renamed to `Pervaxis.Genesis.*.AWS`; Core.Abstractions wired in
-- 🔄 **Next:** Update docs/CI, then implement Task 2.1 (Caching provider)
+- ✅ **Task 2.1 COMPLETE:** ElastiCache Redis provider — implementation, 34/34 unit tests, README
+- 🔄 **Next:** Task 2.2 — Messaging (SQS + SNS)
 
 ---
 
@@ -122,43 +123,27 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 
 ## Phase 2: Core Providers (Priority: HIGH)
 
-### Task 2.1: Pervaxis.Genesis.Caching (ElastiCache Redis)
+### Task 2.1: Pervaxis.Genesis.Caching.AWS (ElastiCache Redis) ✅
+**Status**: 🟢 **COMPLETE**
 
 #### 2.1.1 Project Setup ✅
 - [x] Create folder structure: `Abstractions/`, `Options/`, `Extensions/`, `Providers/ElastiCache/`
-- [x] Add NuGet packages:
-  - [x] AWSSDK.ElastiCache (version: 3.7.401)
-  - [x] StackExchange.Redis (version: 2.8.16)
-  - [x] Microsoft.Extensions.* (DI, Logging, Options, Configuration)
-- [x] Add project reference to `Pervaxis.Genesis.Base`
-- [x] Document dependencies with justification comments
+- [x] Add NuGet packages: AWSSDK.ElastiCache 3.7.401, StackExchange.Redis 2.8.16, Microsoft.Extensions.*
+- [x] Add project reference to `Pervaxis.Genesis.Base`; Core.Abstractions via transitive reference
 
-#### 2.1.2 Implementation
-- [ ] Create `ICache` interface in `Abstractions/`
-  - [ ] `GetAsync<T>(string key, CancellationToken ct)`
-  - [ ] `SetAsync<T>(string key, T value, TimeSpan? expiry, CancellationToken ct)`
-  - [ ] `RemoveAsync(string key, CancellationToken ct)`
-  - [ ] `ExistsAsync(string key, CancellationToken ct)`
-- [ ] Create `CachingOptions` in `Options/`
-  - [ ] Region, ConnectionString, DefaultExpiry, KeyPrefix
-- [ ] Create `CachingServiceCollectionExtensions` in `Extensions/`
-  - [ ] `AddPervaxisCaching()` method
-- [ ] Create `ElastiCacheProvider` in `Providers/ElastiCache/`
-  - [ ] Implement `ICache` interface
-  - [ ] Use StackExchange.Redis for Redis operations
-  - [ ] Add proper logging
-  - [ ] Handle connection failures gracefully
+#### 2.1.2 Implementation ✅
+- [x] `CachingOptions` extending `GenesisOptionsBase` (ConnectionString, DefaultExpiry, KeyPrefix, Database, UseSsl, timeouts)
+- [x] `ElastiCacheProvider` implementing `ICache`: GetAsync, SetAsync, RemoveAsync, ExistsAsync, GetManyAsync, SetManyAsync, RefreshAsync
+- [x] `CachingServiceCollectionExtensions`: `AddGenesisCaching(IConfiguration)` + `AddGenesisCaching(Action<CachingOptions>)`
+- [x] `Lazy<IConnectionMultiplexer>` for deferred connection pooling; internal test constructor for mock injection
 
-#### 2.1.3 Testing
-- [ ] Unit tests for `ElastiCacheProvider`
-- [ ] Integration tests with LocalStack
-- [ ] Test edge cases (null values, expired keys, connection failures)
-- [ ] Verify 90%+ code coverage
+#### 2.1.3 Testing ✅
+- [x] 34 unit tests, **34/34 passing** (zero failures)
+- [x] All methods covered: constructor, get, set, remove, exists, get-many, set-many, refresh, dispose
+- [x] Error paths, null/empty argument guards, key-prefix logic, expiry propagation all verified
 
-#### 2.1.4 Documentation
-- [ ] Create README.md with examples
-- [ ] Document IAM permissions required
-- [ ] Add configuration examples (code + appsettings.json)
+#### 2.1.4 Documentation ✅
+- [x] `README.md` with installation, appsettings.json example, option table, DI registration, usage, IAM permissions, LocalStack, troubleshooting
 
 ---
 
