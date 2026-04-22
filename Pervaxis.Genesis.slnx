@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Pervaxis.Genesis.AIAssistance/Pervaxis.Genesis.AIAssistance.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Base/Pervaxis.Genesis.Base.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Caching/Pervaxis.Genesis.Caching.csproj" />
+    <Project Path="src/Pervaxis.Genesis.FileStorage/Pervaxis.Genesis.FileStorage.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Messaging/Pervaxis.Genesis.Messaging.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Notifications/Pervaxis.Genesis.Notifications.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Reporting/Pervaxis.Genesis.Reporting.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Search/Pervaxis.Genesis.Search.csproj" />
+    <Project Path="src/Pervaxis.Genesis.Workflow/Pervaxis.Genesis.Workflow.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pervaxis.Genesis.AIAssistance.Tests/Pervaxis.Genesis.AIAssistance.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Base.Tests/Pervaxis.Genesis.Base.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Caching.Tests/Pervaxis.Genesis.Caching.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.FileStorage.Tests/Pervaxis.Genesis.FileStorage.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Messaging.Tests/Pervaxis.Genesis.Messaging.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Notifications.Tests/Pervaxis.Genesis.Notifications.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Reporting.Tests/Pervaxis.Genesis.Reporting.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Search.Tests/Pervaxis.Genesis.Search.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.Workflow.Tests/Pervaxis.Genesis.Workflow.Tests.csproj" />
+  </Folder>
+</Solution>
