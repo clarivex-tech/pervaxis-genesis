@@ -1,17 +1,97 @@
 # Pervaxis Genesis - Implementation Task List
 
-> **Status:** Initial structure complete ✅  
-> **Next Phase:** Provider implementation  
-> **Created:** 2026-04-21
+> **Status:** Abstractions in Core complete ✅  
+> **Next Phase:** Restructure for cloud-provider separation  
+> **Created:** 2026-04-21  
+> **Updated:** 2026-04-22
 
 ---
 
 ## 📋 Quick Summary
 
 - ✅ Solution structure created (18 projects)
-- ✅ Documentation complete (7 guides)
+- ✅ Documentation complete (architecture, onboarding, governance)
+- ✅ Genesis abstractions added to Pervaxis.Core
 - ✅ Build configuration verified
-- 🔄 **Next:** Implement providers one by one
+- 🔄 **Next:** Restructure Genesis to use Core abstractions and .AWS suffix
+
+---
+
+## Phase 0: Cloud-Provider Restructure (Priority: CRITICAL - DO THIS FIRST!)
+
+### Task 0.1: Restructure Solution for Cloud-Provider Separation
+**Status**: 🔴 **MUST COMPLETE BEFORE ANY NEW WORK**
+
+This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud-provider-specific naming.
+
+#### 0.1.1: Add Pervaxis.Core NuGet Package Reference
+- [ ] Publish Pervaxis.Core.Abstractions from feature/abstraction branch
+- [ ] Or: Add local project reference to Pervaxis.Core.Abstractions temporarily
+- [ ] Verify Core package includes Genesis abstractions (ICache, ProviderResult<T>, etc.)
+
+#### 0.1.2: Rename Projects to .AWS Suffix
+- [ ] Rename `Pervaxis.Genesis.Caching` → `Pervaxis.Genesis.Caching.AWS`
+- [ ] Rename `Pervaxis.Genesis.Messaging` → `Pervaxis.Genesis.Messaging.AWS`
+- [ ] Rename `Pervaxis.Genesis.FileStorage` → `Pervaxis.Genesis.FileStorage.AWS`
+- [ ] Rename `Pervaxis.Genesis.Search` → `Pervaxis.Genesis.Search.AWS`
+- [ ] Rename `Pervaxis.Genesis.Notifications` → `Pervaxis.Genesis.Notifications.AWS`
+- [ ] Rename `Pervaxis.Genesis.Workflow` → `Pervaxis.Genesis.Workflow.AWS`
+- [ ] Rename `Pervaxis.Genesis.AIAssistance` → `Pervaxis.Genesis.AIAssistance.AWS`
+- [ ] Rename `Pervaxis.Genesis.Reporting` → `Pervaxis.Genesis.Reporting.AWS`
+- [ ] Rename `Pervaxis.Genesis.CloudFormation` → `Pervaxis.Genesis.CloudFormation.AWS`
+- [ ] Update solution file (Pervaxis.Genesis.slnx) with new project names
+- [ ] Update test project names to match (e.g., `Pervaxis.Genesis.Caching.AWS.Tests`)
+
+#### 0.1.3: Update Genesis.Base to Use Core Abstractions
+- [ ] Add reference to `Pervaxis.Core.Abstractions`
+- [ ] Remove `Results/ProviderResult.cs` (use Core's version)
+- [ ] Remove `Options/GenesisOptionsBase.cs` (use Core's version)
+- [ ] Remove `Exceptions/GenesisException.cs` (if Core has equivalent)
+- [ ] Keep only: Configuration/, Extensions/ (template loader, DI helpers)
+- [ ] Update all `using` statements to `Pervaxis.Core.Abstractions.Genesis`
+
+#### 0.1.4: Update Caching.AWS to Use Core Abstractions
+- [ ] Add reference to `Pervaxis.Core.Abstractions`
+- [ ] Change `Abstractions/ICache.cs` to implement `Pervaxis.Core.Abstractions.Genesis.Modules.ICache`
+- [ ] Remove local `ICache` interface (use Core's version)
+- [ ] Update `CachingOptions` to extend `Pervaxis.Core.Abstractions.Genesis.GenesisOptionsBase`
+- [ ] Update `ElastiCacheProvider` to use `Core.Abstractions.Genesis.ProviderResult<T>`
+- [ ] Update all `using` statements
+- [ ] Update namespace from `Pervaxis.Genesis.Caching` → `Pervaxis.Genesis.Caching.AWS`
+
+#### 0.1.5: Update All Project References
+- [ ] Update test projects to reference renamed `.AWS` projects
+- [ ] Update Directory.Build.props if needed
+- [ ] Update CI/CD workflows (pr-check.yml, deploy.yml, publish.yml) with new project names
+- [ ] Update CLAUDE.md with new project structure
+- [ ] Update README.md with cloud-provider separation explanation
+
+#### 0.1.6: Verify Build and Tests
+- [ ] Build entire solution: `dotnet build Pervaxis.Genesis.slnx --configuration Release`
+- [ ] Run all tests: `dotnet test Pervaxis.Genesis.slnx`
+- [ ] Verify zero warnings and zero errors
+- [ ] Check NuGet package metadata
+
+#### 0.1.7: Update Documentation
+- [ ] Update SOLUTION_STRUCTURE.md with new project names
+- [ ] Add note about cloud-provider separation strategy
+- [ ] Update TASKS.md to reflect new structure
+- [ ] Create ADR for the restructure decision (if not already in CLOUD_PROVIDER_SEPARATION.md)
+
+#### 0.1.8: Commit and Push
+- [ ] Commit restructure changes with detailed message
+- [ ] Push to feature branch
+- [ ] Create PR with restructure summary
+
+**Deliverables:**
+- All projects renamed to `Pervaxis.Genesis.*.AWS`
+- Genesis.Base cleaned up (only config loader, no abstractions)
+- All providers reference `Pervaxis.Core.Abstractions.Genesis.Modules.*`
+- Solution builds with zero warnings/errors
+- Tests pass
+- Documentation updated
+
+**Estimated Time:** 2-3 hours
 
 ---
 
