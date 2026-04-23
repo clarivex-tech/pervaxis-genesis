@@ -18,8 +18,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, etc.) -->
-    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.0.0" />
+    <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, IFileStorage, etc.) -->
+    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.1.0" />
   </ItemGroup>
 
 </Project>
