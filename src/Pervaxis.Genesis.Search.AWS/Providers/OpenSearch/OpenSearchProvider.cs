@@ -21,6 +21,7 @@ using Microsoft.Extensions.Options;
 using OpenSearch.Client;
 using OpenSearch.Net;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Search.AWS.Options;
 
@@ -33,21 +34,27 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 {
     private readonly SearchOptions _options;
     private readonly ILogger<OpenSearchProvider> _logger;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IOpenSearchClient> _client;
     private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OpenSearchProvider"/> class.
     /// </summary>
+    /// <param name="options">Search configuration options.</param>
+    /// <param name="logger">Logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     public OpenSearchProvider(
         IOptions<SearchOptions> options,
-        ILogger<OpenSearchProvider> logger)
+        ILogger<OpenSearchProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         _options.Validate();
 
@@ -72,8 +79,9 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         });
 
         _logger.LogInformation(
-            "OpenSearchProvider initialized for domain {DomainEndpoint}",
-            _options.DomainEndpoint);
+            "OpenSearchProvider initialized for domain {DomainEndpoint}, tenant isolation: {TenantIsolation}",
+            _options.DomainEndpoint,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -82,11 +90,14 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     internal OpenSearchProvider(
         IOptions<SearchOptions> options,
         ILogger<OpenSearchProvider> logger,
-        IOpenSearchClient client)
+        IOpenSearchClient client,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(client);
+
+        _tenantContext = tenantContext;
 
         _options = options.Value;
         _logger = logger;
@@ -320,9 +331,21 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     /// </summary>
     private string GetFullIndexName(string index)
     {
-        return string.IsNullOrWhiteSpace(_options.IndexPrefix)
-            ? index.ToLowerInvariant()
-            : $"{_options.IndexPrefix.ToLowerInvariant()}{index.ToLowerInvariant()}";
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(_options.IndexPrefix))
+        {
+            parts.Add(_options.IndexPrefix.TrimEnd('-').ToLowerInvariant());
+        }
+
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            parts.Add($"tenant-{_tenantContext.TenantId.Value.ToLowerInvariant()}");
+        }
+
+        parts.Add(index.ToLowerInvariant());
+
+        return parts.Count > 1 ? string.Join("-", parts) : index.ToLowerInvariant();
     }
 
     /// <inheritdoc />

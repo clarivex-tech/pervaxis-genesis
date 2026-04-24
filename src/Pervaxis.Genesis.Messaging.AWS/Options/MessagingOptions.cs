@@ -37,6 +37,13 @@ public sealed class MessagingOptions : GenesisOptionsBase
     /// </summary>
     public SnsOptions Sns { get; set; } = new();
 
+    /// <summary>
+    /// Gets or sets a value indicating whether to automatically tag messages with tenant ID.
+    /// When enabled, all messages include a "TenantId" attribute for tenant isolation.
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
+
     /// <inheritdoc/>
     public override bool Validate()
     {

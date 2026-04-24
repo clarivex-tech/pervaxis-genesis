@@ -22,10 +22,10 @@
     <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.1.0" />
 
     <!-- Observability: Serilog structured logging + OpenTelemetry tracing -->
-    <ProjectReference Include="..\..\..\Core\src\Pervaxis.Core.Observability\Pervaxis.Core.Observability.csproj" />
+    <PackageReference Include="Pervaxis.Core.Observability" Version="1.0.0" />
 
     <!-- Resilience: Polly-based retry, circuit breaker, timeout -->
-    <ProjectReference Include="..\..\..\Core\src\Pervaxis.Core.Resilience\Pervaxis.Core.Resilience.csproj" />
+    <PackageReference Include="Pervaxis.Core.Resilience" Version="1.0.0" />
   </ItemGroup>
 
 </Project>

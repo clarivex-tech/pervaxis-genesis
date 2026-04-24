@@ -55,6 +55,13 @@ public sealed class ReportingOptions : GenesisOptionsBase
     public int MaxRetries { get; set; } = 3;
 
     /// <summary>
+    /// Gets or sets a value indicating whether to enable tenant isolation.
+    /// When enabled, queries include tenant filters for data isolation.
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
+
+    /// <summary>
     /// Validates the reporting options.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>

@@ -22,6 +22,7 @@ using Amazon.S3.Transfer;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
 
@@ -34,21 +35,27 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 {
     private readonly FileStorageOptions _options;
     private readonly ILogger<S3FileStorageProvider> _logger;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonS3> _s3Client;
     private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="S3FileStorageProvider"/> class.
     /// </summary>
+    /// <param name="options">File storage configuration options.</param>
+    /// <param name="logger">Logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     public S3FileStorageProvider(
         IOptions<FileStorageOptions> options,
-        ILogger<S3FileStorageProvider> logger)
+        ILogger<S3FileStorageProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         _options.Validate();
 
@@ -70,9 +77,10 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         });
 
         _logger.LogInformation(
-            "S3FileStorageProvider initialized for bucket {BucketName} in region {Region}",
+            "S3FileStorageProvider initialized for bucket {BucketName} in region {Region}, tenant isolation: {TenantIsolation}",
             _options.BucketName,
-            _options.Region);
+            _options.Region,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -81,13 +89,15 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     internal S3FileStorageProvider(
         IOptions<FileStorageOptions> options,
         ILogger<S3FileStorageProvider> logger,
-        IAmazonS3 s3Client)
+        IAmazonS3 s3Client,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(s3Client);
 
         _options = options.Value;
+        _tenantContext = tenantContext;
         _logger = logger;
         _s3Client = new Lazy<IAmazonS3>(() => s3Client);
 
@@ -422,6 +432,12 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             }
         }
 
+        // Add tenant tags
+        foreach (var tag in BuildTenantTags())
+        {
+            request.Metadata.Add($"x-amz-meta-{tag.Key}", tag.Value);
+        }
+
         await _s3Client.Value.PutObjectAsync(request, cancellationToken);
     }
 
@@ -467,6 +483,12 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             }
         }
 
+        // Add tenant tags
+        foreach (var tag in BuildTenantTags())
+        {
+            request.Metadata.Add($"x-amz-meta-{tag.Key}", tag.Value);
+        }
+
         await transferUtility.UploadAsync(request, cancellationToken);
     }
 
@@ -475,9 +497,34 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// </summary>
     private string GetFullKey(string key)
     {
-        return string.IsNullOrWhiteSpace(_options.KeyPrefix)
-            ? key
-            : $"{_options.KeyPrefix.TrimEnd('/')}/{key.TrimStart('/')}";
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(_options.KeyPrefix))
+        {
+            parts.Add(_options.KeyPrefix.TrimEnd('/'));
+        }
+
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            parts.Add($"tenant-{_tenantContext.TenantId.Value}");
+        }
+
+        parts.Add(key.TrimStart('/'));
+
+        return string.Join("/", parts);
+    }
+
+    private Dictionary<string, string> BuildTenantTags()
+    {
+        var tags = new Dictionary<string, string>();
+
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags["TenantId"] = _tenantContext.TenantId.Value;
+            tags["TenantName"] = _tenantContext.TenantName;
+        }
+
+        return tags;
     }
 
     /// <summary>

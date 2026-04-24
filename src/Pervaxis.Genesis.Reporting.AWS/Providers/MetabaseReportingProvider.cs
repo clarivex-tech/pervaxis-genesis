@@ -22,6 +22,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Reporting.AWS.Options;
 
@@ -35,6 +36,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 {
     private readonly ILogger<MetabaseReportingProvider> _logger;
     private readonly ReportingOptions _options;
+    private readonly ITenantContext? _tenantContext;
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions;
     private bool _disposed;
@@ -45,12 +47,14 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
     /// <param name="options">The reporting options.</param>
     /// <param name="httpClient">The HTTP client.</param>
     /// <param name="logger">The logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     /// <exception cref="ArgumentNullException">Thrown when any parameter is null.</exception>
     /// <exception cref="GenesisConfigurationException">Thrown when options validation fails.</exception>
     public MetabaseReportingProvider(
         IOptions<ReportingOptions> options,
         HttpClient httpClient,
-        ILogger<MetabaseReportingProvider> logger)
+        ILogger<MetabaseReportingProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(httpClient);
@@ -58,6 +62,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
         _httpClient = httpClient;
 
         if (!_options.Validate())
@@ -76,8 +81,9 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         };
 
         _logger.LogInformation(
-            "MetabaseReportingProvider initialized for {BaseUrl}",
-            _options.BaseUrl);
+            "MetabaseReportingProvider initialized for {BaseUrl}, tenant isolation: {TenantIsolation}",
+            _options.BaseUrl,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -87,11 +93,14 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         ReportingOptions options,
         HttpClient httpClient,
         ILogger<MetabaseReportingProvider> logger,
-        bool skipValidation)
+        bool skipValidation,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(logger);
+
+        _tenantContext = tenantContext;
 
         _options = options;
         _logger = logger;

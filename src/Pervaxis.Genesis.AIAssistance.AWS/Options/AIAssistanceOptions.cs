@@ -69,6 +69,13 @@ public sealed class AIAssistanceOptions : GenesisOptionsBase
     public int RequestTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
+    /// Gets or sets a value indicating whether to enable tenant isolation.
+    /// When enabled, AI requests include tenant metadata for tracking.
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
+
+    /// <summary>
     /// Validates the AI assistance options.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>

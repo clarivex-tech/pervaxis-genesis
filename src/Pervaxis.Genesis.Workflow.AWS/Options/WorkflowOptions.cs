@@ -51,6 +51,13 @@ public sealed class WorkflowOptions : GenesisOptionsBase
     public string? ExecutionNamePrefix { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether to enable tenant isolation.
+    /// When enabled, workflow executions include tenant metadata.
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
+
+    /// <summary>
     /// Validates the workflow options.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>

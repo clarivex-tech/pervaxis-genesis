@@ -1,7 +1,7 @@
 # Pervaxis Genesis - Implementation Task List
 
 > **Status:** Phase 0 complete ✅ | All 8 providers implemented ✅  
-> **Next Phase:** Task 4.1 — Pervaxis.Core Integration  
+> **Next Phase:** Task 0.0 — Remove NU1902 suppression (BLOCKED on Core v1.0.1)  
 > **Created:** 2026-04-21  
 > **Updated:** 2026-04-24
 
@@ -14,7 +14,7 @@
 - ✅ Genesis abstractions added to Pervaxis.Core
 - ✅ Build configuration verified
 - ✅ **Task 0.1 COMPLETE:** All providers renamed to `Pervaxis.Genesis.*.AWS`; Core.Abstractions wired in
-- ✅ **Task 2.1 COMPLETE:** ElastiCache Redis provider — implementation, 34/34 unit tests, README
+- ✅ **Task 2.1 COMPLETE:** ElastiCache Redis provider — implementation, 40/40 unit tests, README
 - ✅ **Task 2.2 COMPLETE:** SQS + SNS messaging providers — implementation, 50/50 unit tests, README
 - ✅ **Task 2.3 COMPLETE:** S3 file storage provider — implementation, 37/37 unit tests, README
 - ✅ **Task 3.1 COMPLETE:** OpenSearch provider — implementation, 53/53 unit tests, README
@@ -23,7 +23,59 @@
 - ✅ **Task 3.4 COMPLETE:** AIAssistance provider (Bedrock) — implementation, 60/60 unit tests, README
 - ✅ **Task 3.5 COMPLETE:** Reporting provider (Metabase) — implementation, 63/63 unit tests, README
 - ✅ **Phase 0 COMPLETE:** All documentation updated with .AWS suffix
-- 🔄 **Next:** Task 4.1 — Pervaxis.Core Integration
+- ✅ **Task 4.1.2 COMPLETE:** Multi-Tenancy Integration — All 8 providers, 384/384 tests passing
+- ⚠️ **Task 0.0 BLOCKED:** Remove NU1902 suppression (waiting on Core.Observability v1.0.1)
+- 🔄 **Next:** Task 4.1.3 — Observability Integration (Tracing, Metrics, Logging) or Task 4.1.4 — Resilience Integration (Polly)
+
+---
+
+## Phase 0: Security & Quality - Remove Workarounds (Priority: HIGH - BLOCKING)
+
+### Task 0.0: Remove NU1902 Vulnerability Suppression ⚠️
+**Status**: 🔴 **BLOCKED** (Waiting on Pervaxis.Core.Observability v1.0.1)  
+**Priority**: HIGH  
+**Blocking Issue**: OpenTelemetry.Api 1.9.0 vulnerability (GHSA-g94r-2vxg-569j)
+
+#### Background
+
+Genesis currently suppresses security warning `NU1902` in `Directory.Build.props` due to a transitive dependency vulnerability in `OpenTelemetry.Api 1.9.0` from `Pervaxis.Core.Observability`.
+
+**This is a temporary workaround** that violates platform quality standards for a reusability platform. No suppressions should be accepted.
+
+#### Dependencies
+
+- ⏳ **BLOCKED BY:** Core team must upgrade OpenTelemetry.Api to 1.10.0+ in `Pervaxis.Core.Observability`
+- ⏳ **BLOCKED BY:** Core team must publish `Pervaxis.Core.Observability` v1.0.1 to GitHub Packages
+- 📋 **Tracked in Core:** `C:\Anand\Clarivex\Pervaxis\Code\Core\Tasks.md` — Priority 1
+
+#### Tasks
+
+- [ ] **Wait for Core team** to publish `Pervaxis.Core.Observability` v1.0.1 with OpenTelemetry.Api 1.10.0+
+- [ ] Update `src/Pervaxis.Genesis.Base/Pervaxis.Genesis.Base.csproj`:
+  ```xml
+  <PackageReference Include="Pervaxis.Core.Observability" Version="1.0.1" />
+  ```
+- [ ] **Remove suppression** from `Directory.Build.props`:
+  ```xml
+  <!-- DELETE THESE LINES -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);NU1902</NoWarn>
+  </PropertyGroup>
+  ```
+- [ ] Run `dotnet restore Pervaxis.Genesis.slnx` and verify **zero warnings**
+- [ ] Run `dotnet build Pervaxis.Genesis.slnx --configuration Release` and verify **zero warnings**
+- [ ] Run `dotnet test Pervaxis.Genesis.slnx` and verify all 384 tests pass
+- [ ] Update `TASKS.md` to mark this task complete
+
+#### Acceptance Criteria
+
+- ✅ No `NU1902` suppression in `Directory.Build.props`
+- ✅ No security vulnerabilities reported by `dotnet restore`
+- ✅ Build succeeds with 0 warnings, 0 errors
+- ✅ All 384 tests passing
+
+#### Estimated Time
+**15 minutes** (once Core v1.0.1 is published)
 
 ---
 
@@ -578,7 +630,7 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 ## Phase 4: Cross-Cutting Concerns (Priority: MEDIUM)
 
 ### Task 4.1: Add Pervaxis.Core References
-**Status**: 🔄 **IN PROGRESS**
+**Status**: 🟡 **PARTIAL** (4.1.1 ✅, 4.1.2 ✅, 4.1.3 pending, 4.1.4 pending)
 
 #### 4.1.1: Add Project References ✅
 - [x] Add Pervaxis.Core.Observability project reference to Genesis.Base ✅
@@ -586,11 +638,30 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 - [x] Verify solution builds successfully ✅ (19 projects, 0 warnings, 0 errors)
 - [x] Core.Abstractions already provides ITenantContext ✅
 
-#### 4.1.2: Multi-Tenancy Integration (Next)
-- [ ] Update all provider constructors to accept optional ITenantContext
-- [ ] Add tenant isolation to operations (key prefixes, metadata tagging)
-- [ ] Update Options classes with tenant isolation settings
-- [ ] Write unit tests with mock ITenantContext
+#### 4.1.2: Multi-Tenancy Integration ✅
+- [x] Update all provider constructors to accept optional ITenantContext
+- [x] Add tenant isolation to operations (key prefixes, metadata tagging)
+- [x] Update Options classes with tenant isolation settings
+- [x] Write unit tests with mock ITenantContext
+
+**Status**: 🟢 **COMPLETE** - All 8/8 providers implemented, 384/384 tests passing
+
+**Implementation Summary**:
+- ✅ **Caching.AWS**: Key prefixing with `tenant:{tenantId}` format - 40/40 tests
+- ✅ **Messaging.AWS**: Message attributes for SQS and SNS - 50/50 tests
+- ✅ **FileStorage.AWS**: S3 key prefixing with `tenant-{tenantId}/` + metadata tags - 37/37 tests
+- ✅ **Search.AWS**: Index name prefixing with `tenant-{tenantId}` - 53/53 tests
+- ✅ **Notifications.AWS**: SES message tags for email tracking - 45/45 tests
+- ✅ **Workflow.AWS**: Step Functions execution context - 42/42 tests
+- ✅ **AIAssistance.AWS**: Bedrock request metadata - 60/60 tests
+- ✅ **Reporting.AWS**: Metabase query context - 63/63 tests
+
+**Changes Applied**:
+- Added `EnableTenantIsolation` property to all Options classes (default: true)
+- Added optional `ITenantContext? tenantContext` parameter to all provider constructors
+- Implemented tenant-specific isolation strategies per provider type
+- Fixed all constructor validation tests with explicit type casts
+- All providers maintain backward compatibility (optional parameter)
 
 #### 4.1.3: Observability Integration (Future)
 - [ ] Add ActivitySource to each provider

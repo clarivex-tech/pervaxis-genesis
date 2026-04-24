@@ -32,9 +32,17 @@ public sealed class SearchOptions : GenesisOptionsBase
     public string DomainEndpoint { get; set; } = string.Empty;
 
     /// <summary>
-    /// Optional index prefix for all indices (e.g., "prod-", "tenant-123-").
+    /// Optional index prefix for all indices (e.g., "prod-").
+    /// Note: For tenant isolation, use <see cref="EnableTenantIsolation"/> instead.
     /// </summary>
     public string IndexPrefix { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to enable tenant isolation.
+    /// When enabled, index names are prefixed with tenant ID and documents include tenant field.
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
 
     /// <summary>
     /// Default number of search results to return (default: 10).

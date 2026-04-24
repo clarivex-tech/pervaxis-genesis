@@ -22,6 +22,7 @@ using Amazon.StepFunctions.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Workflow.AWS.Options;
 
@@ -34,6 +35,7 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
 {
     private readonly ILogger<StepFunctionsWorkflowProvider> _logger;
     private readonly WorkflowOptions _options;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonStepFunctions> _client;
     private readonly JsonSerializerOptions _jsonOptions;
     private bool _disposed;
@@ -43,17 +45,20 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
     /// </summary>
     /// <param name="options">The workflow options.</param>
     /// <param name="logger">The logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     /// <exception cref="ArgumentNullException">Thrown when options or logger is null.</exception>
     /// <exception cref="GenesisConfigurationException">Thrown when options validation fails.</exception>
     public StepFunctionsWorkflowProvider(
         IOptions<WorkflowOptions> options,
-        ILogger<StepFunctionsWorkflowProvider> logger)
+        ILogger<StepFunctionsWorkflowProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         if (!_options.Validate())
         {
@@ -68,8 +73,9 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         };
 
         _logger.LogInformation(
-            "StepFunctionsWorkflowProvider initialized for region {Region} with {Count} state machines",
-            _options.Region, _options.StateMachineArns.Count);
+            "StepFunctionsWorkflowProvider initialized for region {Region} with {Count} state machines, tenant isolation: {TenantIsolation}",
+            _options.Region, _options.StateMachineArns.Count,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -78,9 +84,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
     internal StepFunctionsWorkflowProvider(
         WorkflowOptions options,
         IAmazonStepFunctions client,
-        ILogger<StepFunctionsWorkflowProvider> logger)
+        ILogger<StepFunctionsWorkflowProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _tenantContext = tenantContext;
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(logger);
 

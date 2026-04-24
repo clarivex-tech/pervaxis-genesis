@@ -108,7 +108,7 @@ public abstract class S3FileStorageProviderTests
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
 
             // Act & Assert
-            var act = () => new S3FileStorageProvider(options, logger, null!);
+            var act = () => new S3FileStorageProvider(options, logger, (IAmazonS3)null!);
             act.Should().Throw<ArgumentNullException>().WithParameterName("s3Client");
         }
     }

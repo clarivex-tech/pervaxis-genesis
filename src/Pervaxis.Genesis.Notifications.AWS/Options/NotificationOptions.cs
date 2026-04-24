@@ -66,6 +66,13 @@ public sealed class NotificationOptions : GenesisOptionsBase
     public int RequestTimeoutSeconds { get; set; } = 30;
 
     /// <summary>
+    /// Gets or sets a value indicating whether to enable tenant isolation.
+    /// When enabled, notifications include tenant metadata for tracking.
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
+
+    /// <summary>
     /// Validates the notification options.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>

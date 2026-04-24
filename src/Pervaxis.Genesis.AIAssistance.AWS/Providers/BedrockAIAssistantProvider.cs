@@ -23,6 +23,7 @@ using Amazon.BedrockRuntime.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.AIAssistance.AWS.Options;
 
@@ -36,6 +37,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
 {
     private readonly ILogger<BedrockAIAssistantProvider> _logger;
     private readonly AIAssistanceOptions _options;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonBedrockRuntime> _client;
     private readonly JsonSerializerOptions _jsonOptions;
     private bool _disposed;
@@ -45,17 +47,20 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
     /// </summary>
     /// <param name="options">The AI assistance options.</param>
     /// <param name="logger">The logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     /// <exception cref="ArgumentNullException">Thrown when options or logger is null.</exception>
     /// <exception cref="GenesisConfigurationException">Thrown when options validation fails.</exception>
     public BedrockAIAssistantProvider(
         IOptions<AIAssistanceOptions> options,
-        ILogger<BedrockAIAssistantProvider> logger)
+        ILogger<BedrockAIAssistantProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         if (!_options.Validate())
         {
@@ -70,8 +75,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         };
 
         _logger.LogInformation(
-            "BedrockAIAssistantProvider initialized for region {Region} with text model {TextModel}",
-            _options.Region, _options.TextModelId);
+            "BedrockAIAssistantProvider initialized for region {Region} with text model {TextModel}, tenant isolation: {TenantIsolation}",
+            _options.Region, _options.TextModelId,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -80,7 +86,8 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
     internal BedrockAIAssistantProvider(
         AIAssistanceOptions options,
         IAmazonBedrockRuntime client,
-        ILogger<BedrockAIAssistantProvider> logger)
+        ILogger<BedrockAIAssistantProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(client);
@@ -88,6 +95,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
 
         _options = options;
         _logger = logger;
+        _tenantContext = tenantContext;
         _client = new Lazy<IAmazonBedrockRuntime>(() => client);
         _jsonOptions = new JsonSerializerOptions
         {

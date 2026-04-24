@@ -32,9 +32,16 @@ public sealed class FileStorageOptions : GenesisOptionsBase
     public string BucketName { get; set; } = string.Empty;
 
     /// <summary>
-    /// Optional key prefix for all files (e.g., "uploads/", "tenant-123/").
+    /// Optional key prefix for all files (e.g., "uploads/", "prod/").
+    /// Note: For tenant isolation, use <see cref="EnableTenantIsolation"/> instead.
     /// </summary>
     public string KeyPrefix { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to automatically prefix S3 keys with tenant ID
+    /// and tag objects with tenant metadata. Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
 
     /// <summary>
     /// Default presigned URL expiration time in minutes (default: 60 minutes).

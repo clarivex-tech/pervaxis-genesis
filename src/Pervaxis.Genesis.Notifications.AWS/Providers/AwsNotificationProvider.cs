@@ -23,6 +23,7 @@ using Amazon.SimpleNotificationService.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Notifications.AWS.Options;
 
@@ -36,6 +37,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 {
     private readonly ILogger<AwsNotificationProvider> _logger;
     private readonly NotificationOptions _options;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSimpleEmailService> _sesClient;
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private bool _disposed;
@@ -45,17 +47,20 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
     /// </summary>
     /// <param name="options">The notification options.</param>
     /// <param name="logger">The logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     /// <exception cref="ArgumentNullException">Thrown when options or logger is null.</exception>
     /// <exception cref="GenesisConfigurationException">Thrown when options validation fails.</exception>
     public AwsNotificationProvider(
         IOptions<NotificationOptions> options,
-        ILogger<AwsNotificationProvider> logger)
+        ILogger<AwsNotificationProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         if (!_options.Validate())
         {
@@ -66,8 +71,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateSnsClient);
 
         _logger.LogInformation(
-            "AwsNotificationProvider initialized for region {Region} with sender {FromEmail}",
-            _options.Region, _options.FromEmail);
+            "AwsNotificationProvider initialized for region {Region} with sender {FromEmail}, tenant isolation: {TenantIsolation}",
+            _options.Region, _options.FromEmail,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -77,7 +83,8 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         NotificationOptions options,
         IAmazonSimpleEmailService sesClient,
         IAmazonSimpleNotificationService snsClient,
-        ILogger<AwsNotificationProvider> logger)
+        ILogger<AwsNotificationProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(sesClient);
@@ -85,6 +92,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options;
+        _tenantContext = tenantContext;
         _logger = logger;
         _sesClient = new Lazy<IAmazonSimpleEmailService>(() => sesClient);
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => snsClient);
@@ -126,6 +134,12 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             if (!string.IsNullOrWhiteSpace(_options.ConfigurationSetName))
             {
                 request.ConfigurationSetName = _options.ConfigurationSetName;
+            }
+
+            // Add tenant tags
+            foreach (var tag in BuildTenantTags())
+            {
+                request.Tags.Add(new MessageTag { Name = tag.Key, Value = tag.Value });
             }
 
             var response = await _sesClient.Value.SendEmailAsync(request, cancellationToken);
@@ -383,5 +397,18 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 
         _disposed = true;
         _logger.LogInformation("AwsNotificationProvider disposed");
+    }
+
+    private Dictionary<string, string> BuildTenantTags()
+    {
+        var tags = new Dictionary<string, string>();
+
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags["TenantId"] = _tenantContext.TenantId.Value;
+            tags["TenantName"] = _tenantContext.TenantName;
+        }
+
+        return tags;
     }
 }
