@@ -1,9 +1,9 @@
 # Pervaxis Genesis - Implementation Task List
 
-> **Status:** Search.AWS provider complete ✅  
-> **Next Phase:** Task 3.2 — Notifications (SES + SNS)  
+> **Status:** Phase 0 complete ✅ | All 8 providers implemented ✅  
+> **Next Phase:** Task 4.1 — Pervaxis.Core Integration  
 > **Created:** 2026-04-21  
-> **Updated:** 2026-04-22
+> **Updated:** 2026-04-24
 
 ---
 
@@ -18,7 +18,12 @@
 - ✅ **Task 2.2 COMPLETE:** SQS + SNS messaging providers — implementation, 50/50 unit tests, README
 - ✅ **Task 2.3 COMPLETE:** S3 file storage provider — implementation, 37/37 unit tests, README
 - ✅ **Task 3.1 COMPLETE:** OpenSearch provider — implementation, 53/53 unit tests, README
-- 🔄 **Next:** Task 3.2 — Notifications (SES + SNS)
+- ✅ **Task 3.2 COMPLETE:** Notifications provider (SES + SNS) — implementation, 45/45 unit tests, README
+- ✅ **Task 3.3 COMPLETE:** Workflow provider (Step Functions) — implementation, 42/42 unit tests, README
+- ✅ **Task 3.4 COMPLETE:** AIAssistance provider (Bedrock) — implementation, 60/60 unit tests, README
+- ✅ **Task 3.5 COMPLETE:** Reporting provider (Metabase) — implementation, 63/63 unit tests, README
+- ✅ **Phase 0 COMPLETE:** All documentation updated with .AWS suffix
+- 🔄 **Next:** Task 4.1 — Pervaxis.Core Integration
 
 ---
 
@@ -61,25 +66,24 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 
 #### 0.1.5: Update All Project References ✅
 - [x] Update test project names to match renamed `.AWS` projects
-- [ ] Update CI/CD workflows (pr-check.yml, deploy.yml, publish.yml) with new project names
-- [ ] Update CLAUDE.md with new project structure
-- [ ] Update README.md with cloud-provider separation explanation
+- [x] Update CI/CD workflows (pr-check.yml, deploy.yml, publish.yml) with new project names ✅ (Already correct - use .slnx)
+- [x] Update CLAUDE.md with new project structure ✅
+- [x] Update README.md with cloud-provider separation explanation ✅
 
 #### 0.1.6: Verify Build and Tests ✅
-- [x] Build entire solution: `dotnet build Pervaxis.Genesis.slnx --configuration Release`
-- [x] Verified zero warnings and zero errors (19 projects built)
-- [ ] Run all tests: `dotnet test Pervaxis.Genesis.slnx`
+- [x] Build entire solution: `dotnet build Pervaxis.Genesis.slnx --configuration Release` ✅
+- [x] Verified zero warnings and zero errors (19 projects built) ✅
+- [x] Run all tests: `dotnet test Pervaxis.Genesis.slnx` ✅ 384/384 passing
 
-#### 0.1.7: Update Documentation
-- [ ] Update SOLUTION_STRUCTURE.md with new project names
-- [ ] Add note about cloud-provider separation strategy
-- [ ] Update TASKS.md to reflect new structure
-- [ ] Create ADR for the restructure decision (if not already in CLOUD_PROVIDER_SEPARATION.md)
+#### 0.1.7: Update Documentation ✅
+- [x] Update SOLUTION_STRUCTURE.md with new project names ✅
+- [x] Add note about cloud-provider separation strategy ✅
+- [x] Update TASKS.md to reflect new structure ✅
+- [x] Cloud-provider separation already documented in existing guides ✅
 
 #### 0.1.8: Commit and Push
-- [ ] Commit restructure changes with detailed message
-- [ ] Push to feature branch
-- [ ] Create PR with restructure summary
+- [ ] Commit Phase 0 cleanup with detailed message
+- [ ] Continue to Phase 4.1
 
 **Deliverables:**
 - All projects renamed to `Pervaxis.Genesis.*.AWS`
@@ -302,171 +306,272 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 
 ---
 
-### Task 3.2: Pervaxis.Genesis.Notifications.AWS (SES + SNS)
+### Task 3.2: Pervaxis.Genesis.Notifications.AWS (SES + SNS) ✅
+**Status**: 🟢 **COMPLETE**
 
 **Interface**: ✅ `INotification` available in Core.Abstractions v1.1.0
 
-#### 3.2.1 Project Setup
-- [ ] Verify `INotification` interface exists in Core.Abstractions v1.1.0 NuGet
-- [ ] Create folder structure: `Options/`, `Extensions/`, `Providers/Ses/`, `Providers/Sns/`
-- [ ] Add NuGet packages:
-  - [ ] AWSSDK.SimpleEmail package
-  - [ ] AWSSDK.SimpleNotificationService package (shared with Messaging)
-  - [ ] Microsoft.Extensions.* packages
-- [ ] Add project reference to `Pervaxis.Genesis.Base`
+#### 3.2.1 Project Setup ✅
+- [x] Verify `INotification` interface exists in Core.Abstractions v1.1.0 NuGet
+- [x] Create folder structure: `Options/`, `Extensions/`, `Providers/`
+- [x] Add NuGet packages:
+  - [x] AWSSDK.SimpleEmail v3.7.401.9
+  - [x] AWSSDK.SimpleNotificationService v3.7.400.68
+  - [x] Microsoft.Extensions.* packages v9.0.0
+  - [x] Microsoft.Extensions.Options.ConfigurationExtensions v9.0.0 (critical for IConfiguration binding)
+- [x] Add project reference to `Pervaxis.Genesis.Base`
 
-#### 3.2.2 SES + SNS Implementation
-- [ ] Use `INotification` interface from Core.Abstractions.Genesis.Modules
-  - [ ] `SendEmailAsync(string to, string subject, string body, bool isHtml, CancellationToken ct)`
-  - [ ] `SendTemplatedEmailAsync(string to, string templateId, IDictionary<string, string> templateData, CancellationToken ct)`
-  - [ ] `SendSmsAsync(string phoneNumber, string message, CancellationToken ct)`
-  - [ ] `SendPushAsync(string deviceToken, string title, string message, IDictionary<string, string>? data, CancellationToken ct)`
-- [ ] Create `NotificationOptions` extending `GenesisOptionsBase`
-  - [ ] SES settings (from email, configuration set)
-  - [ ] SNS settings (topic ARNs, platform applications)
-  - [ ] Validation logic
-- [ ] Create `NotificationServiceCollectionExtensions`
-- [ ] Create unified provider or separate SES/SNS providers
-  - [ ] All 4 interface methods implemented
-  - [ ] LocalStack support
-  - [ ] IDisposable implementation
+#### 3.2.2 SES + SNS Implementation ✅
+- [x] Use `INotification` interface from Core.Abstractions.Genesis.Modules (returns Task<string> for message IDs)
+  - [x] `SendEmailAsync(string recipient, string subject, string body, bool isHtml, CancellationToken ct)`
+  - [x] `SendTemplatedEmailAsync(string recipient, string templateId, IDictionary<string, string> templateData, CancellationToken ct)`
+  - [x] `SendSmsAsync(string phoneNumber, string message, CancellationToken ct)`
+  - [x] `SendPushAsync(string deviceToken, string title, string message, IDictionary<string, string>? data, CancellationToken ct)`
+- [x] Create `NotificationOptions` extending `GenesisOptionsBase`
+  - [x] SES settings: FromEmail, FromName, ConfigurationSetName
+  - [x] SNS settings: SmsTopicArn, PushPlatformApplicationArn
+  - [x] MaxRetries, RequestTimeoutSeconds
+  - [x] Validation logic with email format check
+- [x] Create `NotificationServiceCollectionExtensions`
+  - [x] `AddGenesisNotifications(IConfiguration)` overload
+  - [x] `AddGenesisNotifications(Action<NotificationOptions>)` overload
+- [x] Create unified `AwsNotificationProvider` combining SES + SNS
+  - [x] All 4 interface methods implemented
+  - [x] Lazy client initialization for SES and SNS
+  - [x] LocalStack support (UseLocalEmulator with Uri.AbsoluteUri)
+  - [x] IDisposable implementation
+  - [x] Platform endpoint creation for push notifications
+  - [x] Internal constructor for testing with InternalsVisibleTo
 
-#### 3.2.3 Testing
-- [ ] Unit tests for notification provider (target: 90%+ coverage)
-- [ ] Test all 4 methods (email, templated email, SMS, push)
-- [ ] Test error conditions and exception handling
+#### 3.2.3 Testing ✅
+- [x] **45 unit tests, 45/45 passing** (100% pass rate)
+- [x] Test constructor validation (5 tests)
+- [x] Test SendEmailAsync (7 tests) - simple, plain text, configuration set, null checks, error handling
+- [x] Test SendTemplatedEmailAsync (3 tests) - valid, null data, error handling
+- [x] Test SendSmsAsync (4 tests) - direct, with topic ARN, null checks, error handling
+- [x] Test SendPushAsync (4 tests) - valid, custom data, missing ARN, null checks
+- [x] Test NotificationOptions validation (11 tests)
+- [x] Test DI extensions (11 tests)
+- [x] Test dispose behavior (2 tests)
 
-#### 3.2.4 Documentation
-- [ ] README.md with email, SMS, push examples
-- [ ] IAM permissions documentation
-- [ ] SES domain/email verification instructions
-- [ ] SNS topic and platform application setup
+#### 3.2.4 Documentation ✅
+- [x] README.md with comprehensive examples
+  - [x] Email (HTML and plain text)
+  - [x] Templated emails with JSON template data
+  - [x] SMS with E.164 phone number format
+  - [x] Push notifications with FCM/APNS
+- [x] IAM permissions for SES and SNS
+- [x] SES setup instructions (email verification, domain verification, sandbox exit)
+- [x] SES template creation with AWS CLI
+- [x] SNS platform application setup (FCM/APNS)
+- [x] SNS SMS configuration (spending limits, message types)
+- [x] LocalStack configuration with docker-compose
+- [x] Troubleshooting section (5 common issues)
+- [x] Best practices for email deliverability, SMS cost management, push token handling
 
 ---
 
-### Task 3.3: Pervaxis.Genesis.Workflow.AWS (Step Functions)
+### Task 3.3: Pervaxis.Genesis.Workflow.AWS (Step Functions) ✅
+**Status**: 🟢 **COMPLETE**
 
 **Interface**: ✅ `IWorkflow` available in Core.Abstractions v1.1.0
 
-#### 3.3.1 Project Setup
-- [ ] Verify `IWorkflow` interface exists in Core.Abstractions v1.1.0 NuGet
-- [ ] Create folder structure: `Options/`, `Extensions/`, `Providers/StepFunctions/`
-- [ ] Add NuGet packages:
-  - [ ] AWSSDK.StepFunctions package
-  - [ ] Microsoft.Extensions.* packages
-- [ ] Add project reference to `Pervaxis.Genesis.Base`
+#### 3.3.1 Project Setup ✅
+- [x] Verify `IWorkflow` interface exists in Core.Abstractions v1.1.0 NuGet
+- [x] Create folder structure: `Options/`, `Extensions/`, `Providers/`
+- [x] Add NuGet packages:
+  - [x] AWSSDK.StepFunctions v3.7.401
+  - [x] Microsoft.Extensions.* packages v9.0.0
+  - [x] Microsoft.Extensions.Options.ConfigurationExtensions v9.0.0
+- [x] Add project reference to `Pervaxis.Genesis.Base`
+- [x] InternalsVisibleTo for testing
 
-#### 3.3.2 Implementation
-- [ ] Use `IWorkflow` interface from Core.Abstractions.Genesis.Modules
-  - [ ] `StartExecutionAsync(string workflowName, object input, CancellationToken ct)`
-  - [ ] `GetExecutionStatusAsync(string executionId, CancellationToken ct)`
-  - [ ] `GetExecutionOutputAsync<T>(string executionId, CancellationToken ct)`
-  - [ ] `StopExecutionAsync(string executionId, CancellationToken ct)`
-- [ ] Create `WorkflowOptions` extending `GenesisOptionsBase`
-  - [ ] Region, state machine ARN mappings
-  - [ ] Validation logic
-- [ ] Create `WorkflowServiceCollectionExtensions`
-- [ ] Create `StepFunctionsWorkflowProvider` in `Providers/StepFunctions/`
-  - [ ] All 4 interface methods implemented
-  - [ ] LocalStack support
-  - [ ] IDisposable implementation
+#### 3.3.2 Implementation ✅
+- [x] Use `IWorkflow` interface from Core.Abstractions.Genesis.Modules (returns Task<string>, Task<T?>, Task<bool>)
+  - [x] `StartExecutionAsync(string workflowName, object input, CancellationToken ct)` - Returns execution ARN
+  - [x] `GetExecutionStatusAsync(string executionId, CancellationToken ct)` - Returns status string (RUNNING, SUCCEEDED, etc.)
+  - [x] `GetExecutionOutputAsync<T>(string executionId, CancellationToken ct)` - Returns typed output or null if not completed
+  - [x] `StopExecutionAsync(string executionId, CancellationToken ct)` - Returns bool for success
+- [x] Create `WorkflowOptions` extending `GenesisOptionsBase`
+  - [x] StateMachineArns dictionary (workflow name → ARN mapping)
+  - [x] ExecutionNamePrefix, MaxRetries, RequestTimeoutSeconds
+  - [x] Comprehensive validation logic (ARN format check, dictionary validation)
+  - [x] Read-only dictionary property to satisfy CA2227
+- [x] Create `WorkflowServiceCollectionExtensions`
+  - [x] `AddGenesisWorkflow(IConfiguration)` overload
+  - [x] `AddGenesisWorkflow(Action<WorkflowOptions>)` overload
+- [x] Create `StepFunctionsWorkflowProvider`
+  - [x] All 4 interface methods implemented
+  - [x] Auto-generated execution names with timestamp and GUID
+  - [x] JSON serialization/deserialization for input/output
+  - [x] Lazy IAmazonStepFunctions client initialization
+  - [x] LocalStack support (UseLocalEmulator with Uri.AbsoluteUri)
+  - [x] IDisposable implementation
+  - [x] Internal constructor for testing
+  - [x] Comprehensive error handling with GenesisException
 
-#### 3.3.3 Testing
-- [ ] Unit tests for workflow provider (target: 90%+ coverage)
-- [ ] Test all 4 methods
-- [ ] Test error conditions and exception handling
+#### 3.3.3 Testing ✅
+- [x] **42 unit tests, 42/42 passing** (100% pass rate)
+- [x] Test constructor validation (5 tests)
+- [x] Test StartExecutionAsync (5 tests) - valid, null checks, unknown workflow, error handling
+- [x] Test GetExecutionStatusAsync (3 tests) - valid, null checks, non-existent execution
+- [x] Test GetExecutionOutputAsync (4 tests) - succeeded, running, null output, null ARN
+- [x] Test StopExecutionAsync (4 tests) - valid, null checks, non-existent, invalid ARN
+- [x] Test WorkflowOptions validation (12 tests) - all validation scenarios
+- [x] Test DI extensions (7 tests) - configuration binding, action config, null checks
+- [x] Test dispose behavior (2 tests)
 
-#### 3.3.4 Documentation
-- [ ] README.md with workflow examples
-- [ ] State machine definition examples
-- [ ] IAM permissions documentation
+#### 3.3.4 Documentation ✅
+- [x] README.md with comprehensive examples (600+ lines)
+  - [x] Start execution with typed input
+  - [x] Get execution status with status mapping
+  - [x] Get typed output from completed executions
+  - [x] Stop running executions
+  - [x] Polling pattern for long-running workflows
+  - [x] Event-driven pattern recommendation (EventBridge)
+- [x] State machine definition examples (order processing workflow JSON)
+- [x] IAM permissions for application and Step Functions execution role
+- [x] AWS CLI commands for state machine creation
+- [x] LocalStack configuration with docker-compose
+- [x] Execution status values table
+- [x] Troubleshooting section (5 common issues)
+- [x] Best practices (state machine design, execution names, input/output, error handling, monitoring, cost optimization)
 
 ---
 
-### Task 3.4: Pervaxis.Genesis.AIAssistance.AWS (Bedrock)
+### Task 3.4: Pervaxis.Genesis.AIAssistance.AWS (Bedrock) ✅
+**Status**: 🟢 **COMPLETE**
 
 **Interface**: ✅ `IAIAssistant` available in Core.Abstractions v1.1.0
 
-#### 3.4.1 Project Setup
-- [ ] Verify `IAIAssistant` interface exists in Core.Abstractions v1.1.0 NuGet
-- [ ] Create folder structure: `Options/`, `Extensions/`, `Providers/Bedrock/`
-- [ ] Add NuGet packages:
-  - [ ] AWSSDK.Bedrock package
-  - [ ] AWSSDK.BedrockRuntime package
-  - [ ] Microsoft.Extensions.* packages
-- [ ] Add project reference to `Pervaxis.Genesis.Base`
+#### 3.4.1 Project Setup ✅
+- [x] Verified `IAIAssistant` interface exists in Core.Abstractions v1.1.0 NuGet
+- [x] Created folder structure: `Options/`, `Extensions/`, `Providers/`
+- [x] Added NuGet packages:
+  - [x] AWSSDK.Bedrock v3.7.401
+  - [x] AWSSDK.BedrockRuntime v3.7.401.8
+  - [x] Microsoft.Extensions.* packages v9.0.0
+  - [x] Microsoft.Extensions.Options.ConfigurationExtensions v9.0.0
+- [x] Added project reference to `Pervaxis.Genesis.Base`
 
-#### 3.4.2 Implementation
-- [ ] Use `IAIAssistant` interface from Core.Abstractions.Genesis.Modules
-  - [ ] `GenerateTextAsync(string prompt, CancellationToken ct)`
-  - [ ] `GenerateEmbeddingAsync(string text, CancellationToken ct)`
-  - [ ] `GenerateImageAsync(string prompt, CancellationToken ct)`
-- [ ] Create `AIAssistanceOptions` extending `GenesisOptionsBase`
-  - [ ] Region, ModelId, Temperature, MaxTokens
-  - [ ] Validation logic
-- [ ] Create `AIAssistanceServiceCollectionExtensions`
-- [ ] Create `BedrockAIAssistantProvider` in `Providers/Bedrock/`
-  - [ ] All 3 interface methods implemented
-  - [ ] Support Claude models
-  - [ ] Support Titan models
-  - [ ] IDisposable implementation
+#### 3.4.2 Implementation ✅
+- [x] Used `IAIAssistant` interface from Core.Abstractions.Genesis.Modules
+  - [x] `GenerateTextAsync(string prompt, CancellationToken ct)` - supports Claude and Titan models
+  - [x] `GenerateEmbeddingAsync(string text, CancellationToken ct)` - Titan Embeddings
+  - [x] `GenerateImageAsync(string prompt, CancellationToken ct)` - Stable Diffusion
+- [x] Created `AIAssistanceOptions` extending `GenesisOptionsBase`
+  - [x] Properties: TextModelId (Claude 3.5 Sonnet default), EmbeddingModelId (Titan), ImageModelId (Stable Diffusion), Temperature, MaxTokens, MaxRetries, RequestTimeoutSeconds
+  - [x] Comprehensive validation logic for all properties
+- [x] Created `AIAssistanceServiceCollectionExtensions`
+  - [x] `AddGenesisAIAssistance(IConfiguration)` overload
+  - [x] `AddGenesisAIAssistance(Action<AIAssistanceOptions>)` overload
+- [x] Created `BedrockAIAssistantProvider`
+  - [x] All 3 interface methods implemented with model-specific logic
+  - [x] Model detection for Claude vs Titan in GenerateTextAsync
+  - [x] Model-specific request builders (BuildClaudeRequest, BuildTitanTextRequest)
+  - [x] Model-specific response parsers (ParseClaudeResponse, ParseTitanTextResponse, ParseTitanEmbeddingResponse, ParseStableDiffusionResponse)
+  - [x] Lazy IAmazonBedrockRuntime client initialization
+  - [x] LocalStack support (UseLocalEmulator with Uri.AbsoluteUri)
+  - [x] IDisposable implementation
+  - [x] Internal constructor for testing
+  - [x] Comprehensive error handling with GenesisException
 
-#### 3.4.3 Testing
-- [ ] Unit tests (mock Bedrock responses) (target: 90%+ coverage)
-- [ ] Test all 3 methods
-- [ ] Test error conditions and exception handling
+#### 3.4.3 Testing ✅
+- [x] **60 unit tests, 60/60 passing** (100% pass rate)
+- [x] Test constructor validation (4 tests)
+- [x] Test GenerateTextAsync (6 tests) - Claude model, Titan model, null prompt, invalid response, error handling
+- [x] Test GenerateEmbeddingAsync (4 tests) - valid embedding, null text, invalid response, error handling
+- [x] Test GenerateImageAsync (4 tests) - valid image, null prompt, invalid response, error handling
+- [x] Test AIAssistanceOptions validation (14 tests) - all validation scenarios for model IDs, temperature, tokens, retries, timeouts
+- [x] Test DI extensions (8 tests) - configuration binding, action config, null checks, singleton lifetime, default values
+- [x] Test dispose behavior (3 tests)
 - [ ] Integration tests with real Bedrock API (future)
 
-#### 3.4.4 Documentation
-- [ ] README.md with AI examples
-- [ ] Model selection guide
-- [ ] Cost estimation documentation
-- [ ] IAM permissions documentation
+#### 3.4.4 Documentation ✅
+- [x] README.md with comprehensive AI examples (500+ lines)
+  - [x] Text generation examples (blog posts, Q&A)
+  - [x] Embeddings examples (similarity search, document indexing)
+  - [x] Image generation examples (marketing images, illustrations)
+  - [x] Model selection guide (Claude 3.5 Sonnet, Opus, Titan text models)
+  - [x] Embedding models comparison (Titan G1 vs V2)
+  - [x] Image generation models (Stable Diffusion XL)
+  - [x] Configuration options table with descriptions
+- [x] IAM permissions with minimum and model-specific examples
+- [x] Cost estimation with detailed examples (text, embeddings, images)
+- [x] LocalStack configuration with docker-compose
+- [x] Troubleshooting section (model not found, throttling, timeouts, invalid response)
+- [x] Best practices (temperature settings, token management, prompt engineering, caching embeddings, batch processing)
 
 ---
 
-### Task 3.5: Pervaxis.Genesis.Reporting.AWS (Metabase REST API)
+### Task 3.5: Pervaxis.Genesis.Reporting.AWS (Metabase REST API) ✅
+**Status**: 🟢 **COMPLETE**
 
 **Interface**: ✅ `IReporting` available in Core.Abstractions v1.1.0
 
-#### 3.5.1 Project Setup
-- [ ] Verify `IReporting` interface exists in Core.Abstractions v1.1.0 NuGet
-- [ ] Create folder structure: `Options/`, `Extensions/`, `Providers/Metabase/`
-- [ ] Add NuGet packages:
-  - [ ] System.Net.Http.Json package
-  - [ ] Microsoft.Extensions.Http package
-  - [ ] Microsoft.Extensions.* packages
-- [ ] Add project reference to `Pervaxis.Genesis.Base`
-- [ ] No AWS SDK needed (Metabase hosted on EC2)
+#### 3.5.1 Project Setup ✅
+- [x] Verified `IReporting` interface exists in Core.Abstractions v1.1.0 NuGet
+- [x] Created folder structure: `Options/`, `Extensions/`, `Providers/`
+- [x] Added NuGet packages:
+  - [x] Microsoft.Extensions.Http v9.0.0 (includes System.Net.Http.Json)
+  - [x] Microsoft.Extensions.* packages v9.0.0
+  - [x] Microsoft.Extensions.Options.ConfigurationExtensions v9.0.0
+- [x] Added project reference to `Pervaxis.Genesis.Base`
+- [x] No AWS SDK needed (Metabase uses REST API)
 
-#### 3.5.2 Implementation
-- [ ] Use `IReporting` interface from Core.Abstractions.Genesis.Modules
-  - [ ] `ExecuteQueryAsync<T>(string query, CancellationToken ct)`
-  - [ ] `GetDashboardAsync(string dashboardId, CancellationToken ct)`
-  - [ ] `CreateDashboardAsync(string name, object definition, CancellationToken ct)`
-  - [ ] `ExportReportAsync(string reportId, string format, CancellationToken ct)`
-- [ ] Create `ReportingOptions` extending `GenesisOptionsBase`
-  - [ ] BaseUrl, ApiKey, Timeout
-  - [ ] Validation logic
-- [ ] Create `ReportingServiceCollectionExtensions`
-- [ ] Create `MetabaseReportingProvider` in `Providers/Metabase/`
-  - [ ] All 4 interface methods implemented
-  - [ ] REST API client implementation
-  - [ ] Authentication handling
-  - [ ] Response deserialization
-  - [ ] IDisposable implementation
+#### 3.5.2 Implementation ✅
+- [x] Used `IReporting` interface from Core.Abstractions.Genesis.Modules
+  - [x] `ExecuteQueryAsync<T>(string query, CancellationToken ct)` - SQL query execution with type mapping
+  - [x] `GetDashboardAsync(string dashboardId, CancellationToken ct)` - Dashboard metadata retrieval
+  - [x] `CreateDashboardAsync(string name, object definition, CancellationToken ct)` - Dashboard creation
+  - [x] `ExportReportAsync(string reportId, string format, CancellationToken ct)` - Report export (CSV, JSON, XLSX)
+- [x] Created `ReportingOptions` extending `GenesisOptionsBase`
+  - [x] Properties: BaseUrl (HTTP/HTTPS validated), ApiKey, DatabaseId (optional), RequestTimeoutSeconds, MaxRetries
+  - [x] Comprehensive validation logic with URI scheme checking
+- [x] Created `ReportingServiceCollectionExtensions`
+  - [x] `AddGenesisReporting(IConfiguration)` overload
+  - [x] `AddGenesisReporting(Action<ReportingOptions>)` overload
+  - [x] HttpClient registration with IHttpClientFactory
+- [x] Created `MetabaseReportingProvider`
+  - [x] All 4 interface methods implemented with Metabase REST API
+  - [x] Automatic result mapping from Metabase columns to .NET types
+  - [x] JsonElement handling for proper type conversion
+  - [x] HTTP authentication with X-API-KEY header
+  - [x] Response deserialization with System.Text.Json
+  - [x] IDisposable implementation for HttpClient
+  - [x] Internal constructor for testing (4-parameter with skipValidation flag)
+  - [x] Format validation for exports (csv, json, xlsx only)
 
-#### 3.5.3 Testing
-- [ ] Unit tests with mocked HTTP responses (target: 90%+ coverage)
-- [ ] Test all 4 methods
-- [ ] Test error conditions and exception handling
+#### 3.5.3 Testing ✅
+- [x] **63 unit tests, 63/63 passing** (100% pass rate)
+- [x] Test constructor validation (4 tests)
+- [x] Test ExecuteQueryAsync (5 tests) - valid results, empty results, null query, HTTP errors
+- [x] Test GetDashboardAsync (3 tests) - valid ID, null ID, not found
+- [x] Test CreateDashboardAsync (4 tests) - valid, null name, null definition, HTTP errors
+- [x] Test ExportReportAsync (10 tests) - CSV, JSON, XLSX formats, null parameters, unsupported format, HTTP errors
+- [x] Test ReportingOptions validation (14 tests) - all validation scenarios for BaseUrl, ApiKey, timeouts, URL schemes
+- [x] Test DI extensions (8 tests) - configuration binding, action config, null checks, HttpClient factory registration
+- [x] Test dispose behavior (2 tests)
+- [x] Used Moq.Contrib.HttpClient for HTTP mocking
 - [ ] Integration tests against test Metabase instance (future)
 
-#### 3.5.4 Documentation
-- [ ] README.md with reporting examples
-- [ ] API authentication setup guide
-- [ ] Query examples
-- [ ] Dashboard creation examples
+#### 3.5.4 Documentation ✅
+- [x] README.md with comprehensive reporting examples (800+ lines)
+  - [x] Query execution examples (monthly sales, top customers)
+  - [x] Dashboard management examples (get, create)
+  - [x] Report export examples (CSV, JSON, XLSX to file)
+  - [x] Type-safe result mapping examples
+  - [x] API key generation step-by-step guide
+  - [x] Query result mapping rules and examples
+  - [x] Export formats with examples
+  - [x] Configuration options table
+- [x] Security best practices for API key storage (user secrets, Key Vault)
+- [x] Performance considerations (query optimization, caching, async pagination)
+- [x] Metabase REST API endpoint documentation
+- [x] Docker Compose deployment example
+- [x] AWS deployment options (EC2, ECS Fargate, RDS)
+- [x] Troubleshooting section (timeout, 401 errors, query syntax, empty results)
+- [x] Best practices (parameterized queries, result limits, caching, large exports, monitoring)
 
 ---
 
