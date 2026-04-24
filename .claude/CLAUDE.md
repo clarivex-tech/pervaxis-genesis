@@ -45,18 +45,19 @@ Add this header to **every source file** created:
 
 ## Project Overview
 
-**Pervaxis Genesis** is a collection of .NET libraries providing unified abstractions for AWS services:
+**Pervaxis Genesis** is a collection of .NET libraries providing AWS service implementations:
 
-- **Pervaxis.Genesis.Base** - Core abstractions, result types, configuration
-- **Pervaxis.Genesis.Caching** - ElastiCache (Redis)
-- **Pervaxis.Genesis.Messaging** - SQS + SNS
-- **Pervaxis.Genesis.FileStorage** - S3
-- **Pervaxis.Genesis.Search** - OpenSearch
-- **Pervaxis.Genesis.Notifications** - SES + SNS
-- **Pervaxis.Genesis.Workflow** - Step Functions
-- **Pervaxis.Genesis.AIAssistance** - Bedrock
-- **Pervaxis.Genesis.Reporting** - Metabase
-- **Pervaxis.Genesis.CloudFormation** - CloudFormation
+- **Pervaxis.Genesis.Base** - Base abstractions, result types, configuration ✅
+- **Pervaxis.Genesis.Caching.AWS** - ElastiCache (Redis) ✅ 34 tests
+- **Pervaxis.Genesis.Messaging.AWS** - SQS + SNS ✅ 50 tests
+- **Pervaxis.Genesis.FileStorage.AWS** - S3 ✅ 37 tests
+- **Pervaxis.Genesis.Search.AWS** - OpenSearch ✅ 53 tests
+- **Pervaxis.Genesis.Notifications.AWS** - SES + SNS ✅ 45 tests
+- **Pervaxis.Genesis.Workflow.AWS** - Step Functions ✅ 42 tests
+- **Pervaxis.Genesis.AIAssistance.AWS** - Bedrock ✅ 60 tests
+- **Pervaxis.Genesis.Reporting.AWS** - Metabase ✅ 63 tests
+
+**Total:** 384 tests passing across 8 providers
 
 ---
 
@@ -87,15 +88,20 @@ Add this header to **every source file** created:
 Each provider project follows this structure:
 
 ```
-Pervaxis.Genesis.{Provider}/
-├── Abstractions/          # Interfaces (ICache, IFileStorage, etc.)
+Pervaxis.Genesis.{Provider}.AWS/
 ├── Options/               # Configuration options extending GenesisOptionsBase
 ├── Extensions/            # DI registration extensions
 ├── Providers/             # Implementation folders (e.g., ElastiCache/, S3/)
 │   └── {Implementation}/  # Concrete provider implementations
 ├── README.md              # Package documentation
-└── Pervaxis.Genesis.{Provider}.csproj
+└── Pervaxis.Genesis.{Provider}.AWS.csproj
 ```
+
+**⚠️ CRITICAL: NO Abstractions/ folder in Genesis projects**
+
+All interfaces (ICache, IMessaging, IFileStorage, etc.) MUST be defined in **Pervaxis.Core.Abstractions** NuGet package under `Pervaxis.Core.Abstractions.Genesis.Modules` namespace.
+
+See `.claude/guides/CORE_ABSTRACTIONS_COMPLIANCE.md` for full compliance guidelines.
 
 ### Dependency Guidelines
 
@@ -122,11 +128,12 @@ When implementing a new provider, follow this sequence:
 - [ ] Add project reference to Genesis.Base
 - [ ] Add copyright header to all files
 
-### 2. Abstractions
-- [ ] Create primary interface (e.g., `ICache`, `IFileStorage`)
-- [ ] Define async methods with CancellationToken support
-- [ ] Add XML documentation to all public members
-- [ ] Follow naming conventions (GetAsync, SetAsync, etc.)
+### 2. Abstractions ⚠️ CRITICAL COMPLIANCE STEP
+- [ ] **FIRST**: Verify interface exists in `Pervaxis.Core.Abstractions` NuGet package
+- [ ] **If missing**: STOP and add interface to Core.Abstractions repository first
+- [ ] **NEVER** create local Abstractions/ folder or interfaces in Genesis projects
+- [ ] Reference interface from `Pervaxis.Core.Abstractions.Genesis.Modules` namespace
+- [ ] See `.claude/guides/CORE_ABSTRACTIONS_COMPLIANCE.md` for process
 
 ### 3. Options
 - [ ] Create options class extending `GenesisOptionsBase`
@@ -325,6 +332,7 @@ dotnet restore Pervaxis.Genesis.slnx
 
 - **Solution Structure**: `.claude/SOLUTION_STRUCTURE.md`
 - **Task List**: `TASKS.md`
+- **Core Abstractions Compliance**: `.claude/guides/CORE_ABSTRACTIONS_COMPLIANCE.md` ⚠️ **READ THIS FIRST**
 - **CI Setup Guide**: `.claude/guides/ci-sonarcloud-setup.md`
 - **Skills**: `.claude/skills/`
 

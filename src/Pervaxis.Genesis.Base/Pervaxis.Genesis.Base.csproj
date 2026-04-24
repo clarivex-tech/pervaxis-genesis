@@ -18,8 +18,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, etc.) -->
-    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.0.0" />
+    <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, IFileStorage, ITenantContext, etc.) -->
+    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.1.0" />
+
+    <!-- Observability: Serilog structured logging + OpenTelemetry tracing -->
+    <PackageReference Include="Pervaxis.Core.Observability" Version="1.0.0" />
+
+    <!-- Resilience: Polly-based retry, circuit breaker, timeout -->
+    <PackageReference Include="Pervaxis.Core.Resilience" Version="1.0.0" />
   </ItemGroup>
 
 </Project>

@@ -20,6 +20,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Caching.AWS.Options;
 using Pervaxis.Genesis.Caching.AWS.Providers.ElastiCache;
@@ -85,7 +86,7 @@ public class ElastiCacheProviderTests
         [Fact]
         public void NullConnection_ThrowsArgumentNullException()
         {
-            var act = () => new ElastiCacheProvider(MsOptions.Create(_options), _mockLogger.Object, null!);
+            var act = () => new ElastiCacheProvider(MsOptions.Create(_options), _mockLogger.Object, (IConnectionMultiplexer)null!);
             act.Should().Throw<ArgumentNullException>().WithParameterName("connection");
         }
 
@@ -501,6 +502,194 @@ public class ElastiCacheProviderTests
             provider.Dispose();
 
             _mockMultiplexer.Verify(m => m.Dispose(), Times.Once);
+        }
+    }
+
+    // ── Multi-Tenancy ─────────────────────────────────────────────────────
+
+    public class TenantIsolation : ElastiCacheProviderTests
+    {
+        private readonly Mock<ITenantContext> _mockTenantContext;
+
+        public TenantIsolation()
+        {
+            _mockTenantContext = new Mock<ITenantContext>();
+        }
+
+        private ElastiCacheProvider CreateProviderWithTenant(
+            CachingOptions? options = null,
+            ITenantContext? tenantContext = null) =>
+            new(
+                MsOptions.Create(options ?? _options),
+                _mockLogger.Object,
+                _mockMultiplexer.Object,
+                tenantContext);
+
+        [Fact]
+        public async Task WhenTenantIsolationEnabled_PrependsTenatIdToKey()
+        {
+            var tenantId = new TenantId("tenant-123");
+            _mockTenantContext.Setup(t => t.TenantId).Returns(tenantId);
+            _mockTenantContext.Setup(t => t.IsResolved).Returns(true);
+
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                Region = "us-east-1",
+                EnableTenantIsolation = true
+            };
+
+            _mockDatabase
+                .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(RedisValue.Null);
+
+            var provider = CreateProviderWithTenant(options, _mockTenantContext.Object);
+            await provider.GetAsync<string>("test-key");
+
+            _mockDatabase.Verify(
+                d => d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "tenant:tenant-123:test-key"),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task WhenTenantIsolationDisabled_DoesNotPrependTenantId()
+        {
+            var tenantId = new TenantId("tenant-123");
+            _mockTenantContext.Setup(t => t.TenantId).Returns(tenantId);
+            _mockTenantContext.Setup(t => t.IsResolved).Returns(true);
+
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                Region = "us-east-1",
+                EnableTenantIsolation = false
+            };
+
+            _mockDatabase
+                .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(RedisValue.Null);
+
+            var provider = CreateProviderWithTenant(options, _mockTenantContext.Object);
+            await provider.GetAsync<string>("test-key");
+
+            _mockDatabase.Verify(
+                d => d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "test-key"),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task WhenTenantNotResolved_DoesNotPrependTenantId()
+        {
+            _mockTenantContext.Setup(t => t.IsResolved).Returns(false);
+
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                Region = "us-east-1",
+                EnableTenantIsolation = true
+            };
+
+            _mockDatabase
+                .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(RedisValue.Null);
+
+            var provider = CreateProviderWithTenant(options, _mockTenantContext.Object);
+            await provider.GetAsync<string>("test-key");
+
+            _mockDatabase.Verify(
+                d => d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "test-key"),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task WithKeyPrefixAndTenant_CombinesBoth()
+        {
+            var tenantId = new TenantId("tenant-456");
+            _mockTenantContext.Setup(t => t.TenantId).Returns(tenantId);
+            _mockTenantContext.Setup(t => t.IsResolved).Returns(true);
+
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                Region = "us-east-1",
+                KeyPrefix = "prod",
+                EnableTenantIsolation = true
+            };
+
+            _mockDatabase
+                .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(RedisValue.Null);
+
+            var provider = CreateProviderWithTenant(options, _mockTenantContext.Object);
+            await provider.GetAsync<string>("test-key");
+
+            _mockDatabase.Verify(
+                d => d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "prod:tenant:tenant-456:test-key"),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task WhenNoTenantContext_DoesNotPrependTenantId()
+        {
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                Region = "us-east-1",
+                EnableTenantIsolation = true
+            };
+
+            _mockDatabase
+                .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(RedisValue.Null);
+
+            var provider = CreateProviderWithTenant(options, null);
+            await provider.GetAsync<string>("test-key");
+
+            _mockDatabase.Verify(
+                d => d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "test-key"),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task SetAsync_AppliesTonantIsolation()
+        {
+            var tenantId = new TenantId("tenant-789");
+            _mockTenantContext.Setup(t => t.TenantId).Returns(tenantId);
+            _mockTenantContext.Setup(t => t.IsResolved).Returns(true);
+
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                Region = "us-east-1",
+                EnableTenantIsolation = true
+            };
+
+            _mockDatabase
+                .Setup(d => d.StringSetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<TimeSpan?>(), It.IsAny<bool>(), It.IsAny<When>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(true);
+
+            var provider = CreateProviderWithTenant(options, _mockTenantContext.Object);
+            await provider.SetAsync("test-key", "test-value");
+
+            _mockDatabase.Verify(
+                d => d.StringSetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "tenant:tenant-789:test-key"),
+                    It.IsAny<RedisValue>(),
+                    It.IsAny<TimeSpan?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<When>(),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
         }
     }
 }

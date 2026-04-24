@@ -75,7 +75,7 @@ public class SnsMessagingProviderTests
         [Fact]
         public void NullSnsClient_ThrowsArgumentNullException()
         {
-            var act = () => new SnsMessagingProvider(MsOptions.Create(_options), _mockLogger.Object, null!);
+            var act = () => new SnsMessagingProvider(MsOptions.Create(_options), _mockLogger.Object, (IAmazonSimpleNotificationService)null!);
             act.Should().Throw<ArgumentNullException>().WithParameterName("snsClient");
         }
 

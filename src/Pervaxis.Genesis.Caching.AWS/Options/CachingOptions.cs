@@ -40,9 +40,17 @@ public sealed class CachingOptions : GenesisOptionsBase
 
     /// <summary>
     /// Gets or sets the key prefix for all cache keys.
-    /// Useful for multi-tenancy or environment isolation.
+    /// Useful for environment isolation (e.g., "dev", "staging", "prod").
+    /// Note: For tenant isolation, use <see cref="EnableTenantIsolation"/> instead.
     /// </summary>
     public string KeyPrefix { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to automatically prefix cache keys with tenant ID.
+    /// When enabled, all cache keys are prefixed with "tenant:{tenantId}:".
+    /// Default is true.
+    /// </summary>
+    public bool EnableTenantIsolation { get; set; } = true;
 
     /// <summary>
     /// Gets or sets the Redis database number to use.
