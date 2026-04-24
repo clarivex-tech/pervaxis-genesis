@@ -75,7 +75,7 @@ public class SqsMessagingProviderTests
         [Fact]
         public void NullSqsClient_ThrowsArgumentNullException()
         {
-            var act = () => new SqsMessagingProvider(MsOptions.Create(_options), _mockLogger.Object, null!);
+            var act = () => new SqsMessagingProvider(MsOptions.Create(_options), _mockLogger.Object, (IAmazonSQS)null!);
             act.Should().Throw<ArgumentNullException>().WithParameterName("sqsClient");
         }
 
