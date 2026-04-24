@@ -578,11 +578,34 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 ## Phase 4: Cross-Cutting Concerns (Priority: MEDIUM)
 
 ### Task 4.1: Add Pervaxis.Core References
-- [ ] Add Pervaxis.Core NuGet package to all projects
-- [ ] Replace custom exceptions with Pervaxis.Core exceptions
-- [ ] Use Pervaxis.Core multi-tenancy abstractions
-- [ ] Use Pervaxis.Core observability (Serilog + OpenTelemetry)
-- [ ] Use Pervaxis.Core resilience policies (Polly)
+**Status**: 🔄 **IN PROGRESS**
+
+#### 4.1.1: Add Project References ✅
+- [x] Add Pervaxis.Core.Observability project reference to Genesis.Base ✅
+- [x] Add Pervaxis.Core.Resilience project reference to Genesis.Base ✅
+- [x] Verify solution builds successfully ✅ (19 projects, 0 warnings, 0 errors)
+- [x] Core.Abstractions already provides ITenantContext ✅
+
+#### 4.1.2: Multi-Tenancy Integration (Next)
+- [ ] Update all provider constructors to accept optional ITenantContext
+- [ ] Add tenant isolation to operations (key prefixes, metadata tagging)
+- [ ] Update Options classes with tenant isolation settings
+- [ ] Write unit tests with mock ITenantContext
+
+#### 4.1.3: Observability Integration (Future)
+- [ ] Add ActivitySource to each provider
+- [ ] Add distributed tracing to all operations
+- [ ] Add structured logging with tenant enrichment
+- [ ] Define and emit provider-specific metrics
+
+#### 4.1.4: Resilience Integration (Future)
+- [ ] Update Options with resilience settings
+- [ ] Wrap AWS SDK calls with Polly pipelines
+- [ ] Handle provider-specific transient errors
+- [ ] Write resilience tests (retry, circuit breaker, timeout)
+
+**Note on Exceptions:**
+- ✅ **Keep** `GenesisException` and `GenesisConfigurationException` - they are provider-specific
 
 ### Task 4.2: Observability Integration
 - [ ] Add structured logging to all providers
