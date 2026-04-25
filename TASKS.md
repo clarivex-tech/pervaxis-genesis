@@ -663,11 +663,134 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 - Fixed all constructor validation tests with explicit type casts
 - All providers maintain backward compatibility (optional parameter)
 
-#### 4.1.3: Observability Integration (Future)
-- [ ] Add ActivitySource to each provider
-- [ ] Add distributed tracing to all operations
-- [ ] Add structured logging with tenant enrichment
-- [ ] Define and emit provider-specific metrics
+#### 4.1.3: Observability Integration 🔄
+**Status**: 🟡 **IN PROGRESS** (1.5/8 providers complete)  
+**Branch**: `feature/observability-integration`  
+**Next Session Task**: **Task 4.1.3-CONTINUE**
+
+**Completed:**
+- [x] ✅ **Caching.AWS**: All 7 methods instrumented (GetAsync, SetAsync, RemoveAsync, ExistsAsync, GetManyAsync, SetManyAsync, RefreshAsync)
+- [x] 🔄 **Messaging.AWS (SQS)**: 1/4 methods done (PublishAsync complete)
+- [x] 📋 Created observability pattern guide: `.claude/guides/OBSERVABILITY_PATTERN.md`
+
+**Remaining Work (32 methods across 7.5 providers):**
+
+**Messaging.AWS (SQS) - 3 methods remaining:**
+- [ ] PublishBatchAsync
+- [ ] ReceiveAsync
+- [ ] DeleteAsync
+
+**Messaging.AWS (SNS) - 3 methods:**
+- [ ] PublishAsync
+- [ ] PublishBatchAsync
+- [ ] SubscribeAsync
+
+**FileStorage.AWS (S3) - 7 methods:**
+- [ ] UploadAsync
+- [ ] DownloadAsync
+- [ ] DeleteAsync
+- [ ] ExistsAsync
+- [ ] GetPresignedUrlAsync
+- [ ] GetMetadataAsync
+- [ ] ListAsync
+
+**Search.AWS (OpenSearch) - 4 methods:**
+- [ ] IndexAsync
+- [ ] SearchAsync
+- [ ] DeleteAsync
+- [ ] BulkIndexAsync
+
+**Notifications.AWS (SES/SNS) - 4 methods:**
+- [ ] SendEmailAsync
+- [ ] SendTemplatedEmailAsync
+- [ ] SendSmsAsync
+- [ ] SendPushAsync
+
+**Workflow.AWS (Step Functions) - 4 methods:**
+- [ ] StartExecutionAsync
+- [ ] GetExecutionStatusAsync
+- [ ] GetExecutionOutputAsync
+- [ ] StopExecutionAsync
+
+**AIAssistance.AWS (Bedrock) - 3 methods:**
+- [ ] GenerateTextAsync
+- [ ] GenerateEmbeddingAsync
+- [ ] GenerateImageAsync
+
+**Reporting.AWS (Metabase) - 4 methods:**
+- [ ] ExecuteQueryAsync
+- [ ] GetDashboardAsync
+- [ ] CreateDashboardAsync
+- [ ] ExportReportAsync
+
+**Implementation Pattern** (documented in `.claude/guides/OBSERVABILITY_PATTERN.md`):
+1. Add using statements: `using System.Diagnostics;` and `using Pervaxis.Core.Observability.Tracing;`
+2. Add `AddTenantTags(Activity?)` helper method to each provider class
+3. Wrap each public method with:
+   ```csharp
+   using var activity = PervaxisActivitySource.StartActivity("{provider}.{operation}", ActivityKind.{kind});
+   activity?.SetTag("{provider}.key_tag", value);
+   AddTenantTags(activity);
+   // ... implementation ...
+   activity?.SetTag("{provider}.success", result);  // on success
+   activity?.SetStatus(ActivityStatusCode.Error, ex.Message);  // on error
+   ```
+4. Use provider-specific span names and tags (see pattern guide)
+
+**Acceptance Criteria:**
+- [ ] All 40 public interface methods across 8 providers have distributed tracing
+- [ ] Build succeeds with 0 warnings
+- [ ] All 384 tests passing
+- [ ] Observability pattern consistently applied
+
+---
+
+### 📋 Task 4.1.3-CONTINUE: Complete Observability Integration (Priority: HIGH)
+
+**Status**: ⏳ **READY TO START**  
+**Branch**: `feature/observability-integration` (already created, checkout and continue)  
+**Prerequisites**: Task 4.1.3 started (Caching.AWS complete)  
+**Estimated Time**: 2-3 hours
+
+**Quick Start Instructions:**
+1. `git checkout feature/observability-integration`
+2. Read `.claude/guides/OBSERVABILITY_PATTERN.md` for the implementation pattern
+3. Apply the pattern to remaining 32 methods across 7.5 providers
+4. Test: `dotnet build Pervaxis.Genesis.slnx --configuration Release`
+5. Test: `dotnet test Pervaxis.Genesis.slnx` (expect 384/384 passing)
+6. Commit: `feat(observability): complete tracing for all 8 Genesis providers`
+
+**Work Breakdown** (copy from Task 4.1.3 above for details):
+- SQS: 3 methods (PublishBatchAsync, ReceiveAsync, DeleteAsync)
+- SNS: 3 methods (all)
+- FileStorage: 7 methods (all)
+- Search: 4 methods (all)
+- Notifications: 4 methods (all)
+- Workflow: 4 methods (all)
+- AIAssistance: 3 methods (all)
+- Reporting: 4 methods (all)
+
+**Implementation Pattern** (from `.claude/guides/OBSERVABILITY_PATTERN.md`):
+- Use `PervaxisActivitySource.StartActivity()` for each public method
+- Add standard tags (operation, resource identifiers)
+- Add tenant tags via `AddTenantTags(activity)` helper
+- Set success/error status in try/catch blocks
+- Follow provider-specific naming conventions (see pattern guide)
+
+**Files to Modify:**
+- `src/Pervaxis.Genesis.Messaging.AWS/Providers/Sqs/SqsMessagingProvider.cs`
+- `src/Pervaxis.Genesis.Messaging.AWS/Providers/Sns/SnsMessagingProvider.cs`
+- `src/Pervaxis.Genesis.FileStorage.AWS/Providers/S3/S3FileStorageProvider.cs`
+- `src/Pervaxis.Genesis.Search.AWS/Providers/OpenSearch/OpenSearchProvider.cs`
+- `src/Pervaxis.Genesis.Notifications.AWS/Providers/AwsNotificationProvider.cs`
+- `src/Pervaxis.Genesis.Workflow.AWS/Providers/StepFunctionsWorkflowProvider.cs`
+- `src/Pervaxis.Genesis.AIAssistance.AWS/Providers/BedrockAIAssistantProvider.cs`
+- `src/Pervaxis.Genesis.Reporting.AWS/Providers/MetabaseReportingProvider.cs`
+
+**Reference Implementation:**
+- See `src/Pervaxis.Genesis.Caching.AWS/Providers/ElastiCache/ElastiCacheProvider.cs` for complete example
+
+---
 
 #### 4.1.4: Resilience Integration (Future)
 - [ ] Update Options with resilience settings
