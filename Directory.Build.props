@@ -12,13 +12,6 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
-  <!-- ── NuGet security audit configuration ─────────────────────────────── -->
-  <PropertyGroup>
-    <!-- Suppress known vulnerability in transitive dependency from Pervaxis.Core.Observability -->
-    <!-- TODO: Remove once Core.Observability updates OpenTelemetry.Api to 1.10.0+ -->
-    <NoWarn>$(NoWarn);NU1902</NoWarn>
-  </PropertyGroup>
-
   <!-- ── Semantic versioning ────────────────────────────────────────────── -->
   <!--
     Bump rules (Conventional Commits → version):
