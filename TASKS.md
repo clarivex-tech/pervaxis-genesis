@@ -23,60 +23,42 @@
 - ✅ **Task 3.4 COMPLETE:** AIAssistance provider (Bedrock) — implementation, 60/60 unit tests, README
 - ✅ **Task 3.5 COMPLETE:** Reporting provider (Metabase) — implementation, 63/63 unit tests, README
 - ✅ **Phase 0 COMPLETE:** All documentation updated with .AWS suffix
+- ✅ **Task 0.0 COMPLETE:** Remove NU1902 suppression — OpenTelemetry.Api 1.9.0 → 1.15.3, Core.Observability v1.1.1
 - ✅ **Task 4.1.2 COMPLETE:** Multi-Tenancy Integration — All 8 providers, 384/384 tests passing
 - ✅ **Task 4.1.3 COMPLETE:** Observability Integration — All 39 methods across 8 providers, 390/390 tests passing
-- ⚠️ **Task 0.0 BLOCKED:** Remove NU1902 suppression (waiting on Core.Observability v1.0.1)
 - 🔄 **Next:** Task 4.1.4 — Resilience Integration (Polly)
 
 ---
 
 ## Phase 0: Security & Quality - Remove Workarounds (Priority: HIGH - BLOCKING)
 
-### Task 0.0: Remove NU1902 Vulnerability Suppression ⚠️
-**Status**: 🔴 **BLOCKED** (Waiting on Pervaxis.Core.Observability v1.0.1)  
+### Task 0.0: Remove NU1902 Vulnerability Suppression ✅
+**Status**: 🟢 **COMPLETE**  
 **Priority**: HIGH  
-**Blocking Issue**: OpenTelemetry.Api 1.9.0 vulnerability (GHSA-g94r-2vxg-569j)
+**Completed**: 2026-04-25
 
 #### Background
 
-Genesis currently suppresses security warning `NU1902` in `Directory.Build.props` due to a transitive dependency vulnerability in `OpenTelemetry.Api 1.9.0` from `Pervaxis.Core.Observability`.
+Genesis previously suppressed security warning `NU1902` due to a transitive dependency vulnerability in `OpenTelemetry.Api 1.9.0` from `Pervaxis.Core.Observability`.
 
-**This is a temporary workaround** that violates platform quality standards for a reusability platform. No suppressions should be accepted.
+#### Resolution
 
-#### Dependencies
+Core team upgraded dependencies and Genesis integrated the changes:
 
-- ⏳ **BLOCKED BY:** Core team must upgrade OpenTelemetry.Api to 1.10.0+ in `Pervaxis.Core.Observability`
-- ⏳ **BLOCKED BY:** Core team must publish `Pervaxis.Core.Observability` v1.0.1 to GitHub Packages
-- 📋 **Tracked in Core:** `C:\Anand\Clarivex\Pervaxis\Code\Core\Tasks.md` — Priority 1
+- [x] ✅ Core team published `Pervaxis.Core.Observability` v1.1.1 with OpenTelemetry.Api 1.15.3+
+- [x] ✅ Updated `src/Pervaxis.Genesis.Base/Pervaxis.Genesis.Base.csproj` to use v1.1.1
+- [x] ✅ Removed NU1902 suppression from `Directory.Build.props`
+- [x] ✅ `dotnet restore` - zero security warnings
+- [x] ✅ `dotnet build` - 0 warnings, 0 errors
+- [x] ✅ `dotnet test` - all 390 tests passing
 
-#### Tasks
-
-- [ ] **Wait for Core team** to publish `Pervaxis.Core.Observability` v1.0.1 with OpenTelemetry.Api 1.10.0+
-- [ ] Update `src/Pervaxis.Genesis.Base/Pervaxis.Genesis.Base.csproj`:
-  ```xml
-  <PackageReference Include="Pervaxis.Core.Observability" Version="1.0.1" />
-  ```
-- [ ] **Remove suppression** from `Directory.Build.props`:
-  ```xml
-  <!-- DELETE THESE LINES -->
-  <PropertyGroup>
-    <NoWarn>$(NoWarn);NU1902</NoWarn>
-  </PropertyGroup>
-  ```
-- [ ] Run `dotnet restore Pervaxis.Genesis.slnx` and verify **zero warnings**
-- [ ] Run `dotnet build Pervaxis.Genesis.slnx --configuration Release` and verify **zero warnings**
-- [ ] Run `dotnet test Pervaxis.Genesis.slnx` and verify all 384 tests pass
-- [ ] Update `TASKS.md` to mark this task complete
-
-#### Acceptance Criteria
+#### Verification
 
 - ✅ No `NU1902` suppression in `Directory.Build.props`
-- ✅ No security vulnerabilities reported by `dotnet restore`
+- ✅ No security vulnerabilities (OpenTelemetry.Api upgraded from 1.9.0 → 1.15.3)
 - ✅ Build succeeds with 0 warnings, 0 errors
-- ✅ All 384 tests passing
-
-#### Estimated Time
-**15 minutes** (once Core v1.0.1 is published)
+- ✅ All 390 tests passing
+- ✅ Core.Observability version: 1.1.1 (exceeds minimum requirement of 1.0.1)
 
 ---
 
