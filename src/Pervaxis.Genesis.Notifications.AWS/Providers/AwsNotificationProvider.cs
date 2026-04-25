@@ -16,6 +16,7 @@
  ************************************************************************
  */
 
+using System.Diagnostics;
 using Amazon.SimpleEmail;
 using Amazon.SimpleEmail.Model;
 using Amazon.SimpleNotificationService;
@@ -24,6 +25,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Notifications.AWS.Options;
 
@@ -106,6 +108,12 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         bool isHtml = true,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("notification.send_email", ActivityKind.Producer);
+        activity?.SetTag("notification.type", "email");
+        activity?.SetTag("notification.destination", recipient);
+        activity?.SetTag("notification.operation", "send_email");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(recipient, nameof(recipient));
         ArgumentException.ThrowIfNullOrWhiteSpace(subject, nameof(subject));
         ArgumentException.ThrowIfNullOrWhiteSpace(body, nameof(body));
@@ -144,6 +152,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 
             var response = await _sesClient.Value.SendEmailAsync(request, cancellationToken);
 
+            activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
                 "Email sent successfully to {To} with MessageId {MessageId}",
                 recipient, response.MessageId);
@@ -152,6 +161,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send email to {To}", recipient);
             throw new GenesisException(nameof(AwsNotificationProvider), $"Failed to send email: {ex.Message}", ex);
         }
@@ -164,6 +174,12 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         IDictionary<string, string> templateData,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("notification.send_templated_email", ActivityKind.Producer);
+        activity?.SetTag("notification.type", "email");
+        activity?.SetTag("notification.destination", recipient);
+        activity?.SetTag("notification.operation", "send_templated_email");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(recipient, nameof(recipient));
         ArgumentException.ThrowIfNullOrWhiteSpace(templateId, nameof(templateId));
         ArgumentNullException.ThrowIfNull(templateData);
@@ -192,6 +208,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 
             var response = await _sesClient.Value.SendTemplatedEmailAsync(request, cancellationToken);
 
+            activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
                 "Templated email sent successfully to {To} using template {TemplateId} with MessageId {MessageId}",
                 recipient, templateId, response.MessageId);
@@ -200,6 +217,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send templated email to {To} using template {TemplateId}", recipient, templateId);
             throw new GenesisException(nameof(AwsNotificationProvider), $"Failed to send templated email: {ex.Message}", ex);
         }
@@ -211,6 +229,12 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         string message,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("notification.send_sms", ActivityKind.Producer);
+        activity?.SetTag("notification.type", "sms");
+        activity?.SetTag("notification.destination", phoneNumber);
+        activity?.SetTag("notification.operation", "send_sms");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(phoneNumber, nameof(phoneNumber));
         ArgumentException.ThrowIfNullOrWhiteSpace(message, nameof(message));
 
@@ -239,6 +263,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 
             var response = await _snsClient.Value.PublishAsync(request, cancellationToken);
 
+            activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
                 "SMS sent successfully to {PhoneNumber} with MessageId {MessageId}",
                 phoneNumber, response.MessageId);
@@ -247,6 +272,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send SMS to {PhoneNumber}", phoneNumber);
             throw new GenesisException(nameof(AwsNotificationProvider), $"Failed to send SMS: {ex.Message}", ex);
         }
@@ -260,12 +286,19 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         IDictionary<string, string>? data = null,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("notification.send_push", ActivityKind.Producer);
+        activity?.SetTag("notification.type", "push");
+        activity?.SetTag("notification.destination", deviceToken);
+        activity?.SetTag("notification.operation", "send_push");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceToken, nameof(deviceToken));
         ArgumentException.ThrowIfNullOrWhiteSpace(title, nameof(title));
         ArgumentException.ThrowIfNullOrWhiteSpace(message, nameof(message));
 
         if (string.IsNullOrWhiteSpace(_options.PushPlatformApplicationArn))
         {
+            activity?.SetStatus(ActivityStatusCode.Error, "PushPlatformApplicationArn is not configured");
             throw new GenesisException(nameof(AwsNotificationProvider), "PushPlatformApplicationArn is not configured");
         }
 
@@ -297,6 +330,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 
             var response = await _snsClient.Value.PublishAsync(publishRequest, cancellationToken);
 
+            activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
                 "Push notification sent successfully to device token {DeviceToken} with MessageId {MessageId}",
                 deviceToken, response.MessageId);
@@ -305,6 +339,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send push notification to device token {DeviceToken}", deviceToken);
             throw new GenesisException(nameof(AwsNotificationProvider), $"Failed to send push notification: {ex.Message}", ex);
         }
@@ -410,5 +445,16 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
 
         return tags;
+    }
+
+    private void AddTenantTags(Activity? activity)
+    {
+        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        {
+            return;
+        }
+
+        activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
+        activity.SetTag("tenant.name", _tenantContext.TenantName);
     }
 }
