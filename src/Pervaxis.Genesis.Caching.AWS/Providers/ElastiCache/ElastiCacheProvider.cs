@@ -20,6 +20,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Caching.AWS.Options;
 using StackExchange.Redis;
@@ -34,6 +35,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 {
     private readonly CachingOptions _options;
     private readonly ILogger<ElastiCacheProvider> _logger;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IConnectionMultiplexer> _connection;
     private readonly JsonSerializerOptions _jsonOptions;
 
@@ -42,15 +44,18 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// </summary>
     /// <param name="options">Caching configuration options.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     public ElastiCacheProvider(
         IOptions<CachingOptions> options,
-        ILogger<ElastiCacheProvider> logger)
+        ILogger<ElastiCacheProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         ValidateOptions();
 
@@ -58,8 +63,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         _jsonOptions = BuildJsonOptions();
 
         _logger.LogInformation(
-            "ElastiCacheProvider initialized with database {Database}",
-            _options.Database);
+            "ElastiCacheProvider initialized with database {Database}, tenant isolation: {TenantIsolation}",
+            _options.Database,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -69,7 +75,8 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     internal ElastiCacheProvider(
         IOptions<CachingOptions> options,
         ILogger<ElastiCacheProvider> logger,
-        IConnectionMultiplexer connection)
+        IConnectionMultiplexer connection,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -77,6 +84,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         ValidateOptions();
 
@@ -358,8 +366,27 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
     private IDatabase GetDatabase() => _connection.Value.GetDatabase(_options.Database);
 
-    private string GetFullKey(string key) =>
-        string.IsNullOrEmpty(_options.KeyPrefix) ? key : $"{_options.KeyPrefix}:{key}";
+    private string GetFullKey(string key)
+    {
+        var parts = new List<string>();
+
+        // Add environment/key prefix if configured
+        if (!string.IsNullOrEmpty(_options.KeyPrefix))
+        {
+            parts.Add(_options.KeyPrefix);
+        }
+
+        // Add tenant prefix if isolation is enabled and tenant context is available
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            parts.Add($"tenant:{_tenantContext.TenantId.Value}");
+        }
+
+        // Add the actual key
+        parts.Add(key);
+
+        return string.Join(":", parts);
+    }
 
     private string Serialize<T>(T value) => JsonSerializer.Serialize(value, _jsonOptions);
 

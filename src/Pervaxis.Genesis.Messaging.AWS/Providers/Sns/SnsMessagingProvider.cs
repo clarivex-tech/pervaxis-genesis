@@ -24,6 +24,7 @@ using Amazon.SimpleNotificationService.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
@@ -44,6 +45,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
     private readonly MessagingOptions _options;
     private readonly ILogger<SnsMessagingProvider> _logger;
+    private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private readonly JsonSerializerOptions _jsonOptions;
 
@@ -52,15 +54,18 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     /// </summary>
     /// <param name="options">Messaging configuration options.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     public SnsMessagingProvider(
         IOptions<MessagingOptions> options,
-        ILogger<SnsMessagingProvider> logger)
+        ILogger<SnsMessagingProvider> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         ValidateOptions();
 
@@ -68,8 +73,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         _jsonOptions = BuildJsonOptions();
 
         _logger.LogInformation(
-            "SnsMessagingProvider initialized for region {Region}",
-            _options.Region);
+            "SnsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}",
+            _options.Region,
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
     }
 
     /// <summary>
@@ -79,7 +85,8 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     internal SnsMessagingProvider(
         IOptions<MessagingOptions> options,
         ILogger<SnsMessagingProvider> logger,
-        IAmazonSimpleNotificationService snsClient)
+        IAmazonSimpleNotificationService snsClient,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -87,6 +94,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
 
         ValidateOptions();
 
@@ -113,6 +121,8 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 TopicArn = topicArn,
                 Message = body
             };
+
+            AddTenantAttributes(request.MessageAttributes);
 
             var response = await _snsClient.Value
                 .PublishAsync(request, cancellationToken)
@@ -154,10 +164,15 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             foreach (var chunk in messageList.Chunk(SnsMaxBatchSize))
             {
                 var entries = chunk
-                    .Select((msg, idx) => new PublishBatchRequestEntry
+                    .Select((msg, idx) =>
                     {
-                        Id = idx.ToString(CultureInfo.InvariantCulture),
-                        Message = Serialize(msg)
+                        var entry = new PublishBatchRequestEntry
+                        {
+                            Id = idx.ToString(CultureInfo.InvariantCulture),
+                            Message = Serialize(msg)
+                        };
+                        AddTenantAttributes(entry.MessageAttributes);
+                        return entry;
                     })
                     .ToList();
 
@@ -345,4 +360,16 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         PropertyNameCaseInsensitive = true,
         WriteIndented = false
     };
+
+    private void AddTenantAttributes(Dictionary<string, MessageAttributeValue> attributes)
+    {
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            attributes["TenantId"] = new MessageAttributeValue
+            {
+                DataType = "String",
+                StringValue = _tenantContext.TenantId.Value
+            };
+        }
+    }
 }

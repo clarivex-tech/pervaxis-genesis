@@ -8,17 +8,19 @@ Pervaxis Genesis provides production-ready AWS service integrations for enterpri
 
 ## Packages
 
-| Package | AWS Service | Purpose |
-|---------|-------------|---------|
-| **Pervaxis.Genesis.Base** | - | Template configuration loader and base abstractions |
-| **Pervaxis.Genesis.Caching** | ElastiCache Redis | Distributed caching |
-| **Pervaxis.Genesis.Messaging** | SQS + SNS | Message queuing and pub/sub |
-| **Pervaxis.Genesis.Search** | OpenSearch | Full-text search and analytics |
-| **Pervaxis.Genesis.Workflow** | Step Functions | Serverless workflow orchestration |
-| **Pervaxis.Genesis.AIAssistance** | Bedrock | AI/ML model integration |
-| **Pervaxis.Genesis.FileStorage** | S3 | Object storage |
-| **Pervaxis.Genesis.Notifications** | SES + SNS | Email and push notifications |
-| **Pervaxis.Genesis.Reporting** | Metabase | REST API integration for reporting |
+| Package | AWS Service | Purpose | Status |
+|---------|-------------|---------|--------|
+| **Pervaxis.Genesis.Base** | - | Base abstractions and configuration | ✅ |
+| **Pervaxis.Genesis.Caching.AWS** | ElastiCache Redis | Distributed caching | ✅ |
+| **Pervaxis.Genesis.Messaging.AWS** | SQS + SNS | Message queuing and pub/sub | ✅ |
+| **Pervaxis.Genesis.FileStorage.AWS** | S3 | Object storage | ✅ |
+| **Pervaxis.Genesis.Search.AWS** | OpenSearch | Full-text search and analytics | ✅ |
+| **Pervaxis.Genesis.Notifications.AWS** | SES + SNS | Email and push notifications | ✅ |
+| **Pervaxis.Genesis.Workflow.AWS** | Step Functions | Serverless workflow orchestration | ✅ |
+| **Pervaxis.Genesis.AIAssistance.AWS** | Bedrock | AI/ML model integration | ✅ |
+| **Pervaxis.Genesis.Reporting.AWS** | Metabase | REST API integration for reporting | ✅ |
+
+**Note:** All provider packages use the `.AWS` suffix to support future multi-cloud implementations (e.g., `.Azure`, `.GCP`).
 
 ## Prerequisites
 
@@ -35,13 +37,13 @@ git clone https://github.com/clarivex-tech/pervaxis-genesis.git
 cd pervaxis-genesis
 
 # Restore dependencies
-dotnet restore Pervaxis.Genesis.sln
+dotnet restore Pervaxis.Genesis.slnx
 
 # Build
-dotnet build Pervaxis.Genesis.sln
+dotnet build Pervaxis.Genesis.slnx --configuration Release
 
 # Run tests
-dotnet test Pervaxis.Genesis.sln
+dotnet test Pervaxis.Genesis.slnx --configuration Release
 ```
 
 ## Installation
@@ -49,9 +51,10 @@ dotnet test Pervaxis.Genesis.sln
 Install individual packages as needed:
 
 ```bash
-dotnet add package Pervaxis.Genesis.Caching
-dotnet add package Pervaxis.Genesis.Messaging
-dotnet add package Pervaxis.Genesis.Search
+dotnet add package Pervaxis.Genesis.Caching.AWS
+dotnet add package Pervaxis.Genesis.Messaging.AWS
+dotnet add package Pervaxis.Genesis.FileStorage.AWS
+dotnet add package Pervaxis.Genesis.Search.AWS
 # ... etc
 ```
 
