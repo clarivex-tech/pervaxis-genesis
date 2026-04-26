@@ -332,6 +332,7 @@ dotnet restore Pervaxis.Genesis.slnx
 
 - **Solution Structure**: `.claude/SOLUTION_STRUCTURE.md`
 - **Task List**: `TASKS.md`
+- **Git Workflow**: `.claude/guides/GIT_WORKFLOW.md` ⚠️ **READ THIS FOR PR PROCESS**
 - **Core Abstractions Compliance**: `.claude/guides/CORE_ABSTRACTIONS_COMPLIANCE.md` ⚠️ **READ THIS FIRST**
 - **CI Setup Guide**: `.claude/guides/ci-sonarcloud-setup.md`
 - **Skills**: `.claude/skills/`
