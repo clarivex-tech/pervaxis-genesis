@@ -53,6 +53,66 @@ AWS ElastiCache (Redis) caching provider for the Pervaxis Genesis platform.
 | `UseLocalEmulator` | `bool` | `false` | Disables SSL; intended for local Redis / LocalStack |
 | `LocalEmulatorUrl` | `string` | `""` | Not used by Redis directly — set `ConnectionString` to `localhost:6379` |
 
+### Resilience configuration
+
+The Caching provider includes built-in resilience policies (retry, circuit breaker, timeout) powered by [Polly v8](https://github.com/App-vNext/Polly) to handle transient AWS failures gracefully.
+
+#### Resilience options
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `Resilience.Enabled` | `bool` | `true` | Enable/disable all resilience policies |
+| `Resilience.RetryCount` | `int` | `3` | Max retry attempts for transient errors |
+| `Resilience.RetryDelayMs` | `int` | `1000` | Base delay for exponential backoff (ms) |
+| `Resilience.MaxRetryDelayMs` | `int` | `30000` | Maximum retry delay cap (ms) |
+| `Resilience.CircuitBreakerFailureThreshold` | `double` | `0.5` | Failure ratio (0.0-1.0) to open circuit |
+| `Resilience.CircuitBreakerMinimumThroughput` | `int` | `10` | Min calls before circuit can trip |
+| `Resilience.CircuitBreakerDurationSeconds` | `int` | `60` | Duration to keep circuit open (seconds) |
+| `Resilience.CircuitBreakerSamplingDurationSeconds` | `int` | `30` | Sampling window for failure ratio (seconds) |
+| `Resilience.TimeoutSeconds` | `int` | `30` | Per-operation timeout (seconds) |
+
+#### Example configuration
+
+```json
+{
+  "Caching": {
+    "ConnectionString": "my-cluster.cache.amazonaws.com:6379",
+    "Region": "ap-south-1",
+    "Resilience": {
+      "Enabled": true,
+      "RetryCount": 3,
+      "RetryDelayMs": 1000,
+      "CircuitBreakerFailureThreshold": 0.5,
+      "CircuitBreakerDurationSeconds": 60,
+      "TimeoutSeconds": 30
+    }
+  }
+}
+```
+
+#### Transient errors handled
+
+The resilience pipeline automatically retries these transient AWS and network errors:
+
+- **Throttling**: HTTP 429, `ThrottlingException`, `RequestLimitExceeded`
+- **Service errors**: HTTP 500, 503, `ServiceUnavailable`, `InternalServerError`
+- **Network errors**: `IOException`, `SocketException`, `HttpRequestException`
+- **Timeouts**: `TimeoutException`, `RequestTimeout`
+
+#### Disabling resilience
+
+To disable resilience (e.g., for testing):
+
+```json
+{
+  "Caching": {
+    "Resilience": {
+      "Enabled": false
+    }
+  }
+}
+```
+
 ## Registration
 
 ### IConfiguration overload

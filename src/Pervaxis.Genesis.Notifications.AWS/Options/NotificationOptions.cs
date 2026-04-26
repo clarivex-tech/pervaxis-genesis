@@ -17,6 +17,7 @@
  */
 
 using Pervaxis.Core.Abstractions.Genesis;
+using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.Notifications.AWS.Options;
 
@@ -73,6 +74,12 @@ public sealed class NotificationOptions : GenesisOptionsBase
     public bool EnableTenantIsolation { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets the resilience policy configuration.
+    /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
+    /// </summary>
+    public ResilienceOptions Resilience { get; set; } = new();
+
+    /// <summary>
     /// Validates the notification options.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>
@@ -99,6 +106,11 @@ public sealed class NotificationOptions : GenesisOptionsBase
         }
 
         if (RequestTimeoutSeconds <= 0)
+        {
+            return false;
+        }
+
+        if (!Resilience.Validate())
         {
             return false;
         }
