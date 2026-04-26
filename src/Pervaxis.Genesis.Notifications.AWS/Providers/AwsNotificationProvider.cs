@@ -23,10 +23,12 @@ using Amazon.SimpleNotificationService;
 using Amazon.SimpleNotificationService.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Notifications.AWS.Options;
 
 namespace Pervaxis.Genesis.Notifications.AWS.Providers;
@@ -42,6 +44,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSimpleEmailService> _sesClient;
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
 
     /// <summary>
@@ -71,11 +74,16 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
 
         _sesClient = new Lazy<IAmazonSimpleEmailService>(CreateSesClient);
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateSnsClient);
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "AwsNotification");
 
         _logger.LogInformation(
-            "AwsNotificationProvider initialized for region {Region} with sender {FromEmail}, tenant isolation: {TenantIsolation}",
+            "AwsNotificationProvider initialized for region {Region} with sender {FromEmail}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region, _options.FromEmail,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -98,6 +106,10 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         _logger = logger;
         _sesClient = new Lazy<IAmazonSimpleEmailService>(() => sesClient);
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => snsClient);
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "AwsNotification");
     }
 
     /// <inheritdoc />
@@ -150,7 +162,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
                 request.Tags.Add(new MessageTag { Name = tag.Key, Value = tag.Value });
             }
 
-            var response = await _sesClient.Value.SendEmailAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sesClient.Value.SendEmailAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
@@ -206,7 +220,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
                 request.ConfigurationSetName = _options.ConfigurationSetName;
             }
 
-            var response = await _sesClient.Value.SendTemplatedEmailAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sesClient.Value.SendTemplatedEmailAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
@@ -261,7 +277,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
                 };
             }
 
-            var response = await _snsClient.Value.PublishAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.PublishAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
@@ -328,7 +346,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
                 MessageStructure = "json"
             };
 
-            var response = await _snsClient.Value.PublishAsync(publishRequest, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.PublishAsync(publishRequest, ct),
+                cancellationToken);
 
             activity?.SetTag("notification.message_id", response.MessageId);
             _logger.LogInformation(
@@ -358,7 +378,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
                 Token = deviceToken
             };
 
-            var response = await _snsClient.Value.CreatePlatformEndpointAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.CreatePlatformEndpointAsync(request, ct),
+                cancellationToken);
             return response.EndpointArn;
         }
         catch (InvalidParameterException ex) when (ex.Message.Contains("already exists", StringComparison.Ordinal))

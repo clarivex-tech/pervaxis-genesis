@@ -24,10 +24,12 @@ using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
@@ -50,6 +52,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSQS> _sqsClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
 
     /// <summary>
     /// Initializes a new instance of <see cref="SqsMessagingProvider"/> for production use.
@@ -73,11 +76,16 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         _sqsClient = new Lazy<IAmazonSQS>(CreateClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SqsMessaging");
 
         _logger.LogInformation(
-            "SqsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}",
+            "SqsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +110,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         _sqsClient = new Lazy<IAmazonSQS>(() => sqsClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SqsMessaging");
     }
 
     /// <inheritdoc/>
@@ -132,9 +144,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             AddTenantAttributes(request.MessageAttributes);
 
-            var response = await _sqsClient.Value
-                .SendMessageAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.SendMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.message_id", response.MessageId);
             _logger.LogDebug(
@@ -199,9 +211,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                     Entries = entries
                 };
 
-                var response = await _sqsClient.Value
-                    .SendMessageBatchAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
+                var response = await _resiliencePipeline.ExecuteAsync(
+                    async ct => await _sqsClient.Value.SendMessageBatchAsync(request, ct).ConfigureAwait(false),
+                    cancellationToken);
 
                 if (response.Failed.Count > 0)
                 {
@@ -256,9 +268,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 VisibilityTimeout = _options.Sqs.VisibilityTimeoutSeconds
             };
 
-            var response = await _sqsClient.Value
-                .ReceiveMessageAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.ReceiveMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.message_count", response.Messages.Count);
             _logger.LogDebug(
@@ -304,9 +316,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 ReceiptHandle = receiptHandle
             };
 
-            await _sqsClient.Value
-                .DeleteMessageAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.DeleteMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.success", true);
             _logger.LogDebug("Deleted message from SQS queue {QueueUrl}", queueUrl);

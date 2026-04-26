@@ -22,10 +22,12 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Reporting.AWS.Options;
 
 namespace Pervaxis.Genesis.Reporting.AWS.Providers;
@@ -41,6 +43,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
 
     /// <summary>
@@ -81,11 +84,16 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "MetabaseReporting");
 
         _logger.LogInformation(
-            "MetabaseReportingProvider initialized for {BaseUrl}, tenant isolation: {TenantIsolation}",
+            "MetabaseReportingProvider initialized for {BaseUrl}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.BaseUrl,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -113,6 +121,10 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "MetabaseReporting");
     }
 
     /// <inheritdoc />
@@ -139,10 +151,12 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 }
             };
 
-            var response = await _httpClient.PostAsJsonAsync(
-                "/api/dataset",
-                requestBody,
-                _jsonOptions,
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.PostAsJsonAsync(
+                    "/api/dataset",
+                    requestBody,
+                    _jsonOptions,
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -192,8 +206,10 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
         try
         {
-            var response = await _httpClient.GetAsync(
-                new Uri($"/api/dashboard/{dashboardId}", UriKind.Relative),
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.GetAsync(
+                    new Uri($"/api/dashboard/{dashboardId}", UriKind.Relative),
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -242,10 +258,12 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 parameters = Array.Empty<object>()
             };
 
-            var response = await _httpClient.PostAsJsonAsync(
-                "/api/dashboard",
-                requestBody,
-                _jsonOptions,
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.PostAsJsonAsync(
+                    "/api/dashboard",
+                    requestBody,
+                    _jsonOptions,
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -302,9 +320,11 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         {
 
             using var content = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync(
-                new Uri(endpoint, UriKind.Relative),
-                content,
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.PostAsync(
+                    new Uri(endpoint, UriKind.Relative),
+                    content,
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();

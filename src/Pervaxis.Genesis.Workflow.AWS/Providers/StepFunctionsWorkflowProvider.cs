@@ -22,10 +22,12 @@ using Amazon.StepFunctions;
 using Amazon.StepFunctions.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Workflow.AWS.Options;
 
 namespace Pervaxis.Genesis.Workflow.AWS.Providers;
@@ -40,6 +42,7 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonStepFunctions> _client;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
 
     /// <summary>
@@ -73,11 +76,16 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "StepFunctionsWorkflow");
 
         _logger.LogInformation(
-            "StepFunctionsWorkflowProvider initialized for region {Region} with {Count} state machines, tenant isolation: {TenantIsolation}",
+            "StepFunctionsWorkflowProvider initialized for region {Region} with {Count} state machines, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region, _options.StateMachineArns.Count,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +110,10 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "StepFunctionsWorkflow");
     }
 
     /// <inheritdoc />
@@ -139,7 +151,9 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 Input = inputJson
             };
 
-            var response = await _client.Value.StartExecutionAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.StartExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.execution_id", response.ExecutionArn);
             _logger.LogInformation(
@@ -179,7 +193,9 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 ExecutionArn = executionId
             };
 
-            var response = await _client.Value.DescribeExecutionAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.DescribeExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.status", response.Status.Value);
             _logger.LogDebug(
@@ -228,7 +244,9 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 ExecutionArn = executionId
             };
 
-            var response = await _client.Value.DescribeExecutionAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.DescribeExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.status", response.Status.Value);
 
@@ -306,7 +324,9 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 Cause = "Execution stopped manually via IWorkflow.StopExecutionAsync"
             };
 
-            await _client.Value.StopExecutionAsync(request, cancellationToken);
+            await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.StopExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.success", true);
             _logger.LogInformation(
