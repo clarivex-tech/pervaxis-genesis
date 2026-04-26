@@ -17,6 +17,7 @@
  */
 
 using Pervaxis.Core.Abstractions.Genesis;
+using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.Caching.AWS.Options;
 
@@ -83,6 +84,12 @@ public sealed class CachingOptions : GenesisOptionsBase
     public bool AbortOnConnectFail { get; set; }
 
     /// <summary>
+    /// Gets or sets the resilience policy configuration.
+    /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
+    /// </summary>
+    public ResilienceOptions Resilience { get; set; } = new();
+
+    /// <summary>
     /// Validates the caching options configuration.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>
@@ -114,6 +121,11 @@ public sealed class CachingOptions : GenesisOptionsBase
         }
 
         if (SyncTimeoutMs <= 0)
+        {
+            return false;
+        }
+
+        if (!Resilience.Validate())
         {
             return false;
         }

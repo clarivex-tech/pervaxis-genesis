@@ -17,6 +17,7 @@
  */
 
 using Pervaxis.Core.Abstractions.Genesis;
+using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Options;
 
@@ -44,10 +45,21 @@ public sealed class MessagingOptions : GenesisOptionsBase
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets the resilience policy configuration.
+    /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
+    /// </summary>
+    public ResilienceOptions Resilience { get; set; } = new();
+
     /// <inheritdoc/>
     public override bool Validate()
     {
         if (!base.Validate())
+        {
+            return false;
+        }
+
+        if (!Resilience.Validate())
         {
             return false;
         }

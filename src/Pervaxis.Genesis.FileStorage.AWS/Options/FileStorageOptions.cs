@@ -18,6 +18,7 @@
 
 using Pervaxis.Core.Abstractions.Genesis;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Options;
 
@@ -76,6 +77,12 @@ public sealed class FileStorageOptions : GenesisOptionsBase
     public string? KmsKeyId { get; set; }
 
     /// <summary>
+    /// Gets or sets the resilience policy configuration.
+    /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
+    /// </summary>
+    public ResilienceOptions Resilience { get; set; } = new();
+
+    /// <summary>
     /// Validates the file storage configuration.
     /// </summary>
     public override bool Validate()
@@ -104,6 +111,11 @@ public sealed class FileStorageOptions : GenesisOptionsBase
             throw new GenesisConfigurationException(
                 "FileStorageOptions",
                 $"{nameof(MultipartUploadPartSizeBytes)} must be between 5MB and 5GB.");
+        }
+
+        if (!Resilience.Validate())
+        {
+            return false;
         }
 
         return baseValid;

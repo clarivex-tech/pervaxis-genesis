@@ -18,6 +18,7 @@
 
 using Pervaxis.Core.Abstractions.Genesis;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.Search.AWS.Options;
 
@@ -75,6 +76,12 @@ public sealed class SearchOptions : GenesisOptionsBase
     public string? Password { get; set; }
 
     /// <summary>
+    /// Gets or sets the resilience policy configuration.
+    /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
+    /// </summary>
+    public ResilienceOptions Resilience { get; set; } = new();
+
+    /// <summary>
     /// Validates the search configuration.
     /// </summary>
     public override bool Validate()
@@ -110,6 +117,11 @@ public sealed class SearchOptions : GenesisOptionsBase
             throw new GenesisConfigurationException(
                 "SearchOptions",
                 $"{nameof(MaxRetries)} must be greater than or equal to 0.");
+        }
+
+        if (!Resilience.Validate())
+        {
+            return false;
         }
 
         return baseValid;
