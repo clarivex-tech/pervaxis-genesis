@@ -21,10 +21,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenSearch.Client;
 using OpenSearch.Net;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Search.AWS.Options;
 
 namespace Pervaxis.Genesis.Search.AWS.Providers.OpenSearch;
@@ -38,6 +40,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     private readonly ILogger<OpenSearchProvider> _logger;
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IOpenSearchClient> _client;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
 
     /// <summary>
@@ -80,10 +83,16 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
             return new OpenSearchClient(connectionSettings);
         });
 
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "OpenSearch");
+
         _logger.LogInformation(
-            "OpenSearchProvider initialized for domain {DomainEndpoint}, tenant isolation: {TenantIsolation}",
+            "OpenSearchProvider initialized for domain {DomainEndpoint}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.DomainEndpoint,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -104,6 +113,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         _options = options.Value;
         _logger = logger;
         _client = new Lazy<IOpenSearchClient>(() => client);
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "OpenSearch");
 
         _options.Validate();
     }
@@ -134,9 +147,11 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 id,
                 fullIndex);
 
-            var response = await _client.Value.IndexAsync(document, idx => idx
-                .Index(fullIndex)
-                .Id(id), cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.IndexAsync(document, idx => idx
+                    .Index(fullIndex)
+                    .Id(id), ct),
+                cancellationToken);
 
             if (!response.IsValid)
             {
@@ -190,12 +205,14 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 fullIndex,
                 query);
 
-            var response = await _client.Value.SearchAsync<T>(s => s
-                .Index(fullIndex)
-                .Query(q => q
-                    .QueryString(qs => qs
-                        .Query(query)))
-                .Size(_options.DefaultPageSize), cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.SearchAsync<T>(s => s
+                    .Index(fullIndex)
+                    .Query(q => q
+                        .QueryString(qs => qs
+                            .Query(query)))
+                    .Size(_options.DefaultPageSize), ct),
+                cancellationToken);
 
             if (!response.IsValid)
             {
@@ -251,8 +268,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 id,
                 fullIndex);
 
-            var response = await _client.Value.DeleteAsync<object>(id, d => d
-                .Index(fullIndex), cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.DeleteAsync<object>(id, d => d
+                    .Index(fullIndex), ct),
+                cancellationToken);
 
             if (!response.IsValid && response.Result != Result.NotFound)
             {
@@ -324,7 +343,9 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                     .Document(kvp.Value));
             }
 
-            var response = await _client.Value.BulkAsync(bulkDescriptor, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.BulkAsync(bulkDescriptor, ct),
+                cancellationToken);
 
             if (!response.IsValid)
             {

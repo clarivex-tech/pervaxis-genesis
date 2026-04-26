@@ -20,10 +20,12 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Caching.AWS.Options;
 using StackExchange.Redis;
 
@@ -40,6 +42,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IConnectionMultiplexer> _connection;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ElastiCacheProvider"/> class.
@@ -63,11 +66,16 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         _connection = new Lazy<IConnectionMultiplexer>(CreateConnection);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "ElastiCache");
 
         _logger.LogInformation(
-            "ElastiCacheProvider initialized with database {Database}, tenant isolation: {TenantIsolation}",
+            "ElastiCacheProvider initialized with database {Database}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Database,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -92,6 +100,10 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         _connection = new Lazy<IConnectionMultiplexer>(() => connection);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "ElastiCache");
     }
 
     /// <inheritdoc/>
@@ -109,7 +121,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            var value = await db.StringGetAsync(fullKey);
+            var value = await _resiliencePipeline.ExecuteAsync(
+                async ct => await db.StringGetAsync(fullKey),
+                cancellationToken);
 
             if (!value.HasValue)
             {
@@ -152,7 +166,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         try
         {
             var serialized = Serialize(value);
-            var result = await db.StringSetAsync(fullKey, serialized, effectiveExpiry);
+            var result = await _resiliencePipeline.ExecuteAsync(
+                async ct => await db.StringSetAsync(fullKey, serialized, effectiveExpiry),
+                cancellationToken);
 
             activity?.SetTag("cache.success", result);
             if (result)
@@ -188,7 +204,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            var result = await db.KeyDeleteAsync(fullKey);
+            var result = await _resiliencePipeline.ExecuteAsync(
+                async ct => await db.KeyDeleteAsync(fullKey),
+                cancellationToken);
 
             activity?.SetTag("cache.success", result);
             if (result)
@@ -221,7 +239,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            var result = await db.KeyExistsAsync(fullKey);
+            var result = await _resiliencePipeline.ExecuteAsync(
+                async ct => await db.KeyExistsAsync(fullKey),
+                cancellationToken);
             activity?.SetTag("cache.exists", result);
             return result;
         }
@@ -256,7 +276,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            var values = await db.StringGetAsync(redisKeys);
+            var values = await _resiliencePipeline.ExecuteAsync(
+                async ct => await db.StringGetAsync(redisKeys),
+                cancellationToken);
             var result = new Dictionary<string, T?>();
 
             for (var i = 0; i < keyList.Count; i++)
@@ -299,20 +321,23 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            var batch = db.CreateBatch();
-            var tasks = new List<Task<bool>>();
-
-            foreach (var item in items)
+            var allSucceeded = await _resiliencePipeline.ExecuteAsync(async ct =>
             {
-                var fullKey = GetFullKey(item.Key);
-                var serialized = Serialize(item.Value);
-                tasks.Add(batch.StringSetAsync(fullKey, serialized, effectiveExpiry));
-            }
+                var batch = db.CreateBatch();
+                var tasks = new List<Task<bool>>();
 
-            batch.Execute();
-            await Task.WhenAll(tasks);
+                foreach (var item in items)
+                {
+                    var fullKey = GetFullKey(item.Key);
+                    var serialized = Serialize(item.Value);
+                    tasks.Add(batch.StringSetAsync(fullKey, serialized, effectiveExpiry));
+                }
 
-            var allSucceeded = tasks.All(t => t.Result);
+                batch.Execute();
+                await Task.WhenAll(tasks);
+
+                return tasks.All(t => t.Result);
+            }, cancellationToken);
 
             activity?.SetTag("cache.key_count", items.Count);
             activity?.SetTag("cache.success", allSucceeded);
@@ -353,7 +378,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            var result = await db.KeyExpireAsync(fullKey, effectiveExpiry);
+            var result = await _resiliencePipeline.ExecuteAsync(
+                async ct => await db.KeyExpireAsync(fullKey, effectiveExpiry),
+                cancellationToken);
 
             activity?.SetTag("cache.success", result);
             if (result)

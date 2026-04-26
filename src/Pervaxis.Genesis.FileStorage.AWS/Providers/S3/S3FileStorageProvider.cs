@@ -22,10 +22,12 @@ using Amazon.S3.Model;
 using Amazon.S3.Transfer;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
@@ -39,6 +41,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     private readonly ILogger<S3FileStorageProvider> _logger;
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonS3> _s3Client;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
 
     /// <summary>
@@ -78,11 +81,17 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             return new AmazonS3Client(config);
         });
 
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "S3FileStorage");
+
         _logger.LogInformation(
-            "S3FileStorageProvider initialized for bucket {BucketName} in region {Region}, tenant isolation: {TenantIsolation}",
+            "S3FileStorageProvider initialized for bucket {BucketName} in region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.BucketName,
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +111,10 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         _tenantContext = tenantContext;
         _logger = logger;
         _s3Client = new Lazy<IAmazonS3>(() => s3Client);
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "S3FileStorage");
 
         _options.Validate();
     }
@@ -185,7 +198,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 Key = fullKey
             };
 
-            var response = await _s3Client.Value.GetObjectAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _s3Client.Value.GetObjectAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("storage.size", response.ContentLength);
             _logger.LogInformation(
@@ -240,7 +255,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 Key = fullKey
             };
 
-            await _s3Client.Value.DeleteObjectAsync(request, cancellationToken);
+            await _resiliencePipeline.ExecuteAsync(
+                async ct => await _s3Client.Value.DeleteObjectAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("storage.success", true);
             _logger.LogInformation("Successfully deleted file {Key} from bucket {Bucket}", fullKey, _options.BucketName);
@@ -279,7 +296,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 Key = fullKey
             };
 
-            await _s3Client.Value.GetObjectMetadataAsync(request, cancellationToken);
+            await _resiliencePipeline.ExecuteAsync(
+                async ct => await _s3Client.Value.GetObjectMetadataAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("storage.exists", true);
             _logger.LogDebug("File {Key} exists in bucket {Bucket}", fullKey, _options.BucketName);
@@ -379,7 +398,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 Key = fullKey
             };
 
-            var response = await _s3Client.Value.GetObjectMetadataAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _s3Client.Value.GetObjectMetadataAsync(request, ct),
+                cancellationToken);
 
             _logger.LogInformation("Retrieved metadata for file {Key}", fullKey);
 
@@ -436,7 +457,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
             do
             {
-                response = await _s3Client.Value.ListObjectsV2Async(request, cancellationToken);
+                response = await _resiliencePipeline.ExecuteAsync(
+                    async ct => await _s3Client.Value.ListObjectsV2Async(request, ct),
+                    cancellationToken);
 
                 keys.AddRange(response.S3Objects.Select(obj =>
                     RemoveKeyPrefix(obj.Key)));
@@ -507,7 +530,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             request.Metadata.Add($"x-amz-meta-{tag.Key}", tag.Value);
         }
 
-        await _s3Client.Value.PutObjectAsync(request, cancellationToken);
+        await _resiliencePipeline.ExecuteAsync(
+            async ct => await _s3Client.Value.PutObjectAsync(request, ct),
+            cancellationToken);
     }
 
     /// <summary>
@@ -558,7 +583,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             request.Metadata.Add($"x-amz-meta-{tag.Key}", tag.Value);
         }
 
-        await transferUtility.UploadAsync(request, cancellationToken);
+        await _resiliencePipeline.ExecuteAsync(
+            async ct => await transferUtility.UploadAsync(request, ct),
+            cancellationToken);
     }
 
     /// <summary>

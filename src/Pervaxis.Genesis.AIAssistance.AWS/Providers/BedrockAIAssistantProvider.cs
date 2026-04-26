@@ -23,10 +23,12 @@ using Amazon.BedrockRuntime;
 using Amazon.BedrockRuntime.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.AIAssistance.AWS.Options;
 
 namespace Pervaxis.Genesis.AIAssistance.AWS.Providers;
@@ -42,6 +44,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonBedrockRuntime> _client;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
 
     /// <summary>
@@ -75,11 +78,16 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "BedrockAIAssistant");
 
         _logger.LogInformation(
-            "BedrockAIAssistantProvider initialized for region {Region} with text model {TextModel}, tenant isolation: {TenantIsolation}",
+            "BedrockAIAssistantProvider initialized for region {Region} with text model {TextModel}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region, _options.TextModelId,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -104,6 +112,10 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "BedrockAIAssistant");
     }
 
     /// <inheritdoc />
@@ -136,7 +148,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 Accept = "application/json"
             };
 
-            var response = await _client.Value.InvokeModelAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.InvokeModelAsync(request, ct),
+                cancellationToken);
 
             using var reader = new StreamReader(response.Body);
             var responseBody = await reader.ReadToEndAsync(cancellationToken);
@@ -191,7 +205,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 Accept = "application/json"
             };
 
-            var response = await _client.Value.InvokeModelAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.InvokeModelAsync(request, ct),
+                cancellationToken);
 
             using var reader = new StreamReader(response.Body);
             var responseBody = await reader.ReadToEndAsync(cancellationToken);
@@ -250,7 +266,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 Accept = "application/json"
             };
 
-            var response = await _client.Value.InvokeModelAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.InvokeModelAsync(request, ct),
+                cancellationToken);
 
             using var reader = new StreamReader(response.Body);
             var responseBody = await reader.ReadToEndAsync(cancellationToken);

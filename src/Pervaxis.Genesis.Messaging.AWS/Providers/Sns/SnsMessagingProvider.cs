@@ -24,10 +24,12 @@ using Amazon.SimpleNotificationService;
 using Amazon.SimpleNotificationService.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sns;
@@ -50,6 +52,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
 
     /// <summary>
     /// Initializes a new instance of <see cref="SnsMessagingProvider"/> for production use.
@@ -73,11 +76,16 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SnsMessaging");
 
         _logger.LogInformation(
-            "SnsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}",
+            "SnsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +110,10 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => snsClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SnsMessaging");
     }
 
     /// <inheritdoc/>
@@ -132,9 +144,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
             AddTenantAttributes(request.MessageAttributes);
 
-            var response = await _snsClient.Value
-                .PublishAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.PublishAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.message_id", response.MessageId);
             _logger.LogDebug(
@@ -199,9 +211,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                     PublishBatchRequestEntries = entries
                 };
 
-                var response = await _snsClient.Value
-                    .PublishBatchAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
+                var response = await _resiliencePipeline.ExecuteAsync(
+                    async ct => await _snsClient.Value.PublishBatchAsync(request, ct).ConfigureAwait(false),
+                    cancellationToken);
 
                 if (response.Failed.Count > 0)
                 {
@@ -286,9 +298,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 Endpoint = endpoint
             };
 
-            var response = await _snsClient.Value
-                .SubscribeAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.SubscribeAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.subscription_arn", response.SubscriptionArn);
             _logger.LogInformation(
