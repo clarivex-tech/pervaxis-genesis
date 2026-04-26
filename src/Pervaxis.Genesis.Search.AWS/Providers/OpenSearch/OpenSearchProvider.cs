@@ -16,12 +16,14 @@
  ************************************************************************
  */
 
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenSearch.Client;
 using OpenSearch.Net;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Search.AWS.Options;
 
@@ -113,6 +115,12 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         T document,
         CancellationToken cancellationToken = default) where T : class
     {
+        using var activity = PervaxisActivitySource.StartActivity("search.index", ActivityKind.Client);
+        activity?.SetTag("search.system", "opensearch");
+        activity?.SetTag("search.operation", "index");
+        activity?.SetTag("search.index", index);
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(index);
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentNullException.ThrowIfNull(document);
@@ -132,6 +140,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             if (!response.IsValid)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, "Failed to index document");
                 _logger.LogError(
                     "Failed to index document {Id}: {Error}",
                     id,
@@ -141,6 +150,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                     : new GenesisException(nameof(OpenSearchProvider), $"Failed to index document: {response.ServerError}");
             }
 
+            activity?.SetTag("search.success", true);
             _logger.LogInformation(
                 "Successfully indexed document {Id} to index {Index}",
                 id,
@@ -150,6 +160,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to index document {Id} to index {Index}", id, index);
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to index document: {id}", ex);
         }
@@ -161,6 +172,12 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         string query,
         CancellationToken cancellationToken = default) where T : class
     {
+        using var activity = PervaxisActivitySource.StartActivity("search.search", ActivityKind.Client);
+        activity?.SetTag("search.system", "opensearch");
+        activity?.SetTag("search.operation", "search");
+        activity?.SetTag("search.index", index);
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(index);
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
 
@@ -182,6 +199,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             if (!response.IsValid)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, "Search failed");
                 _logger.LogError(
                     "Search failed for index {Index}: {Error}",
                     fullIndex,
@@ -193,6 +211,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             var results = response.Documents.ToList();
 
+            activity?.SetTag("search.result_count", results.Count);
             _logger.LogInformation(
                 "Search completed for index {Index}, found {Count} documents",
                 fullIndex,
@@ -202,6 +221,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to search index {Index}", index);
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to search index: {index}", ex);
         }
@@ -213,6 +233,12 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         string id,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("search.delete", ActivityKind.Client);
+        activity?.SetTag("search.system", "opensearch");
+        activity?.SetTag("search.operation", "delete");
+        activity?.SetTag("search.index", index);
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(index);
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
 
@@ -230,6 +256,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             if (!response.IsValid && response.Result != Result.NotFound)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, "Failed to delete document");
                 _logger.LogError(
                     "Failed to delete document {Id}: {Error}",
                     id,
@@ -241,6 +268,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             var wasDeleted = response.Result == Result.Deleted;
 
+            activity?.SetTag("search.success", wasDeleted);
             _logger.LogInformation(
                 "Delete operation for document {Id} completed: {Result}",
                 id,
@@ -250,6 +278,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete document {Id} from index {Index}", id, index);
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to delete document: {id}", ex);
         }
@@ -263,6 +292,13 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(index);
         ArgumentNullException.ThrowIfNull(documents);
+
+        using var activity = PervaxisActivitySource.StartActivity("search.bulk_index", ActivityKind.Client);
+        activity?.SetTag("search.system", "opensearch");
+        activity?.SetTag("search.operation", "bulk_index");
+        activity?.SetTag("search.index", index);
+        activity?.SetTag("search.document_count", documents.Count);
+        AddTenantTags(activity);
 
         if (documents.Count == 0)
         {
@@ -292,6 +328,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             if (!response.IsValid)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, "Bulk index failed");
                 _logger.LogError(
                     "Bulk index failed: {Error}",
                     response.OriginalException?.Message ?? response.ServerError?.ToString());
@@ -302,6 +339,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             var successCount = response.Items.Count(i => i.IsValid);
 
+            activity?.SetTag("search.success_count", successCount);
             if (response.Errors)
             {
                 _logger.LogWarning(
@@ -321,6 +359,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to bulk index documents to index {Index}", index);
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to bulk index documents to: {index}", ex);
         }
@@ -361,5 +400,16 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         _logger.LogDebug("OpenSearchProvider disposed");
 
         _disposed = true;
+    }
+
+    private void AddTenantTags(Activity? activity)
+    {
+        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        {
+            return;
+        }
+
+        activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
+        activity.SetTag("tenant.name", _tenantContext.TenantName);
     }
 }

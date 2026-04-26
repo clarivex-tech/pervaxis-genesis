@@ -17,6 +17,7 @@
  */
 
 using Pervaxis.Core.Abstractions.Genesis;
+using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.AIAssistance.AWS.Options;
 
@@ -76,6 +77,12 @@ public sealed class AIAssistanceOptions : GenesisOptionsBase
     public bool EnableTenantIsolation { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets the resilience policy configuration.
+    /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
+    /// </summary>
+    public ResilienceOptions Resilience { get; set; } = new();
+
+    /// <summary>
     /// Validates the AI assistance options.
     /// </summary>
     /// <returns>True if valid, false otherwise.</returns>
@@ -117,6 +124,11 @@ public sealed class AIAssistanceOptions : GenesisOptionsBase
         }
 
         if (RequestTimeoutSeconds <= 0)
+        {
+            return false;
+        }
+
+        if (!Resilience.Validate())
         {
             return false;
         }

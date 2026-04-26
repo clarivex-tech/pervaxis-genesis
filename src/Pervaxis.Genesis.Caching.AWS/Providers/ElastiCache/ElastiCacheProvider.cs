@@ -16,11 +16,13 @@
  ************************************************************************
  */
 
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Caching.AWS.Options;
 using StackExchange.Redis;
@@ -95,6 +97,11 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.get", ActivityKind.Client);
+        activity?.SetTag("cache.key", key);
+        activity?.SetTag("cache.operation", "get");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
         var fullKey = GetFullKey(key);
@@ -106,15 +113,18 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
             if (!value.HasValue)
             {
+                activity?.SetTag("cache.hit", false);
                 _logger.LogDebug("Cache miss for key: {Key}", fullKey);
                 return default;
             }
 
+            activity?.SetTag("cache.hit", true);
             _logger.LogDebug("Cache hit for key: {Key}", fullKey);
             return Deserialize<T>(value!);
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get cached value for key: {Key}", fullKey);
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache get operation failed", ex);
         }
@@ -127,6 +137,11 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.set", ActivityKind.Client);
+        activity?.SetTag("cache.key", key);
+        activity?.SetTag("cache.operation", "set");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         ArgumentNullException.ThrowIfNull(value);
 
@@ -139,6 +154,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
             var serialized = Serialize(value);
             var result = await db.StringSetAsync(fullKey, serialized, effectiveExpiry);
 
+            activity?.SetTag("cache.success", result);
             if (result)
             {
                 _logger.LogDebug(
@@ -151,6 +167,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to cache value for key: {Key}", fullKey);
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache set operation failed", ex);
         }
@@ -159,6 +176,11 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.remove", ActivityKind.Client);
+        activity?.SetTag("cache.key", key);
+        activity?.SetTag("cache.operation", "remove");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
         var fullKey = GetFullKey(key);
@@ -168,6 +190,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         {
             var result = await db.KeyDeleteAsync(fullKey);
 
+            activity?.SetTag("cache.success", result);
             if (result)
             {
                 _logger.LogDebug("Removed cached value for key: {Key}", fullKey);
@@ -177,6 +200,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to remove cached value for key: {Key}", fullKey);
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache remove operation failed", ex);
         }
@@ -185,6 +209,11 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.exists", ActivityKind.Client);
+        activity?.SetTag("cache.key", key);
+        activity?.SetTag("cache.operation", "exists");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
         var fullKey = GetFullKey(key);
@@ -192,10 +221,13 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         try
         {
-            return await db.KeyExistsAsync(fullKey);
+            var result = await db.KeyExistsAsync(fullKey);
+            activity?.SetTag("cache.exists", result);
+            return result;
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to check existence for key: {Key}", fullKey);
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache exists operation failed", ex);
         }
@@ -206,6 +238,10 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         IEnumerable<string> keys,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.get_many", ActivityKind.Client);
+        activity?.SetTag("cache.operation", "get_many");
+        AddTenantTags(activity);
+
         ArgumentNullException.ThrowIfNull(keys);
 
         var keyList = keys.ToList();
@@ -230,11 +266,13 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                     : default;
             }
 
+            activity?.SetTag("cache.key_count", keyList.Count);
             _logger.LogDebug("Retrieved {Count} keys from cache", keyList.Count);
             return result;
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get multiple cached values");
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache get many operation failed", ex);
         }
@@ -246,6 +284,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.set_many", ActivityKind.Client);
+        activity?.SetTag("cache.operation", "set_many");
+        AddTenantTags(activity);
         ArgumentNullException.ThrowIfNull(items);
 
         if (items.Count == 0)
@@ -273,6 +314,8 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
             var allSucceeded = tasks.All(t => t.Result);
 
+            activity?.SetTag("cache.key_count", items.Count);
+            activity?.SetTag("cache.success", allSucceeded);
             if (allSucceeded)
             {
                 _logger.LogDebug(
@@ -285,6 +328,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to cache multiple values");
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache set many operation failed", ex);
         }
@@ -296,6 +340,11 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("cache.refresh", ActivityKind.Client);
+        activity?.SetTag("cache.key", key);
+        activity?.SetTag("cache.operation", "refresh");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
         var fullKey = GetFullKey(key);
@@ -306,6 +355,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         {
             var result = await db.KeyExpireAsync(fullKey, effectiveExpiry);
 
+            activity?.SetTag("cache.success", result);
             if (result)
             {
                 _logger.LogDebug(
@@ -318,6 +368,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to refresh expiry for key: {Key}", fullKey);
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache refresh operation failed", ex);
         }
@@ -397,4 +448,15 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         PropertyNameCaseInsensitive = true,
         WriteIndented = false
     };
+
+    private void AddTenantTags(Activity? activity)
+    {
+        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        {
+            return;
+        }
+
+        activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
+        activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
 }

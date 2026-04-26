@@ -9,9 +9,9 @@
 
   <ItemGroup>
     <!-- Microsoft Extensions for DI, Logging, Options -->
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
 
     <!-- YAML parsing -->
     <PackageReference Include="YamlDotNet" Version="16.2.1" />
@@ -19,13 +19,13 @@
 
   <ItemGroup>
     <!-- Core platform abstractions (provides GenesisOptionsBase, ProviderResult<T>, ICache, IFileStorage, ITenantContext, etc.) -->
-    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.1.0" />
+    <PackageReference Include="Pervaxis.Core.Abstractions" Version="1.1.1" />
 
     <!-- Observability: Serilog structured logging + OpenTelemetry tracing -->
-    <PackageReference Include="Pervaxis.Core.Observability" Version="1.0.0" />
+    <PackageReference Include="Pervaxis.Core.Observability" Version="1.1.1" />
 
     <!-- Resilience: Polly-based retry, circuit breaker, timeout -->
-    <PackageReference Include="Pervaxis.Core.Resilience" Version="1.0.0" />
+    <PackageReference Include="Pervaxis.Core.Resilience" Version="1.1.1" />
   </ItemGroup>
 
 </Project>

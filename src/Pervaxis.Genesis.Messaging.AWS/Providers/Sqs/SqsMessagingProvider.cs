@@ -16,6 +16,7 @@
  ************************************************************************
  */
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Amazon;
@@ -25,6 +26,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
@@ -108,6 +110,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         T message,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.publish", ActivityKind.Producer);
+        activity?.SetTag("messaging.system", "sqs");
+        activity?.SetTag("messaging.destination", destination);
+        activity?.SetTag("messaging.operation", "publish");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(message);
 
@@ -128,6 +136,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 .SendMessageAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
+            activity?.SetTag("messaging.message_id", response.MessageId);
             _logger.LogDebug(
                 "Published message {MessageId} to SQS queue {QueueUrl}",
                 response.MessageId, queueUrl);
@@ -136,6 +145,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish message to SQS queue {QueueUrl}", queueUrl);
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS publish operation failed", ex);
         }
@@ -147,6 +157,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         IEnumerable<T> messages,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.publish_batch", ActivityKind.Producer);
+        activity?.SetTag("messaging.system", "sqs");
+        activity?.SetTag("messaging.destination", destination);
+        activity?.SetTag("messaging.operation", "publish_batch");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -156,6 +172,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             return [];
         }
 
+        activity?.SetTag("messaging.message_count", messageList.Count);
         var queueUrl = ResolveQueueUrl(destination);
         var allMessageIds = new List<string>();
 
@@ -201,10 +218,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                     response.Successful.Count, queueUrl);
             }
 
+            activity?.SetTag("messaging.success_count", allMessageIds.Count);
             return allMessageIds;
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish batch to SQS queue {QueueUrl}", queueUrl);
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS batch publish operation failed", ex);
         }
@@ -216,6 +235,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         int maxMessages = 10,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.receive", ActivityKind.Consumer);
+        activity?.SetTag("messaging.system", "sqs");
+        activity?.SetTag("messaging.destination", queue);
+        activity?.SetTag("messaging.operation", "receive");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(queue);
 
         var queueUrl = ResolveQueueUrl(queue);
@@ -235,6 +260,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 .ReceiveMessageAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
+            activity?.SetTag("messaging.message_count", response.Messages.Count);
             _logger.LogDebug(
                 "Received {Count} messages from SQS queue {QueueUrl}",
                 response.Messages.Count, queueUrl);
@@ -247,6 +273,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to receive messages from SQS queue {QueueUrl}", queueUrl);
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS receive operation failed", ex);
         }
@@ -258,6 +285,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         string receiptHandle,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.delete", ActivityKind.Client);
+        activity?.SetTag("messaging.system", "sqs");
+        activity?.SetTag("messaging.destination", queue);
+        activity?.SetTag("messaging.operation", "delete");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(queue);
         ArgumentException.ThrowIfNullOrWhiteSpace(receiptHandle);
 
@@ -275,11 +308,13 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 .DeleteMessageAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
+            activity?.SetTag("messaging.success", true);
             _logger.LogDebug("Deleted message from SQS queue {QueueUrl}", queueUrl);
             return true;
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete message from SQS queue {QueueUrl}", queueUrl);
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS delete operation failed", ex);
         }
@@ -368,5 +403,16 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 StringValue = _tenantContext.TenantId.Value
             };
         }
+    }
+
+    private void AddTenantTags(Activity? activity)
+    {
+        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        {
+            return;
+        }
+
+        activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
+        activity.SetTag("tenant.name", _tenantContext.TenantName);
     }
 }

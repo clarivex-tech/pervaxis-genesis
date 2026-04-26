@@ -16,6 +16,7 @@
  ************************************************************************
  */
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Amazon;
@@ -25,6 +26,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
@@ -108,6 +110,12 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         T message,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.publish", ActivityKind.Producer);
+        activity?.SetTag("messaging.system", "sns");
+        activity?.SetTag("messaging.destination", destination);
+        activity?.SetTag("messaging.operation", "publish");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(message);
 
@@ -128,6 +136,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 .PublishAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
+            activity?.SetTag("messaging.message_id", response.MessageId);
             _logger.LogDebug(
                 "Published message {MessageId} to SNS topic {TopicArn}",
                 response.MessageId, topicArn);
@@ -136,6 +145,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish message to SNS topic {TopicArn}", topicArn);
             throw new GenesisException(nameof(SnsMessagingProvider), "SNS publish operation failed", ex);
         }
@@ -147,6 +157,12 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         IEnumerable<T> messages,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.publish_batch", ActivityKind.Producer);
+        activity?.SetTag("messaging.system", "sns");
+        activity?.SetTag("messaging.destination", destination);
+        activity?.SetTag("messaging.operation", "publish_batch");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -156,6 +172,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             return [];
         }
 
+        activity?.SetTag("messaging.message_count", messageList.Count);
         var topicArn = ResolveTopicArn(destination);
         var allMessageIds = new List<string>();
 
@@ -201,10 +218,12 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                     response.Successful.Count, topicArn);
             }
 
+            activity?.SetTag("messaging.success_count", allMessageIds.Count);
             return allMessageIds;
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish batch to SNS topic {TopicArn}", topicArn);
             throw new GenesisException(nameof(SnsMessagingProvider), "SNS batch publish operation failed", ex);
         }
@@ -244,6 +263,12 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         string endpoint,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("messaging.subscribe", ActivityKind.Client);
+        activity?.SetTag("messaging.system", "sns");
+        activity?.SetTag("messaging.destination", topic);
+        activity?.SetTag("messaging.operation", "subscribe");
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
 
@@ -265,6 +290,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 .SubscribeAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
+            activity?.SetTag("messaging.subscription_arn", response.SubscriptionArn);
             _logger.LogInformation(
                 "Subscribed endpoint {Endpoint} to SNS topic {TopicArn} (SubscriptionArn={SubscriptionArn})",
                 endpoint, topicArn, response.SubscriptionArn);
@@ -273,6 +299,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to subscribe {Endpoint} to SNS topic {TopicArn}", endpoint, topicArn);
             throw new GenesisException(nameof(SnsMessagingProvider), "SNS subscribe operation failed", ex);
         }
@@ -371,5 +398,16 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 StringValue = _tenantContext.TenantId.Value
             };
         }
+    }
+
+    private void AddTenantTags(Activity? activity)
+    {
+        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        {
+            return;
+        }
+
+        activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
+        activity.SetTag("tenant.name", _tenantContext.TenantName);
     }
 }
