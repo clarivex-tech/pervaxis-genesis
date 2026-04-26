@@ -16,6 +16,7 @@
  ************************************************************************
  */
 
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Amazon.BedrockRuntime;
@@ -24,6 +25,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.AIAssistance.AWS.Options;
 
@@ -109,6 +111,12 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         string prompt,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("ai.generate_text", ActivityKind.Client);
+        activity?.SetTag("ai.system", "bedrock");
+        activity?.SetTag("ai.operation", "generate_text");
+        activity?.SetTag("ai.model", _options.TextModelId);
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt, nameof(prompt));
 
         try
@@ -137,6 +145,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 ? ParseClaudeResponse(responseBody)
                 : ParseTitanTextResponse(responseBody);
 
+            activity?.SetTag("ai.response_length", generatedText.Length);
             _logger.LogInformation(
                 "Generated text using {ModelId} (length: {Length} chars)",
                 _options.TextModelId, generatedText.Length);
@@ -145,6 +154,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate text using {ModelId}", _options.TextModelId);
             throw new GenesisException(
                 nameof(BedrockAIAssistantProvider),
@@ -158,6 +168,12 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         string text,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("ai.generate_embedding", ActivityKind.Client);
+        activity?.SetTag("ai.system", "bedrock");
+        activity?.SetTag("ai.operation", "generate_embedding");
+        activity?.SetTag("ai.model", _options.EmbeddingModelId);
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(text, nameof(text));
 
         try
@@ -182,6 +198,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
 
             var embedding = ParseTitanEmbeddingResponse(responseBody);
 
+            activity?.SetTag("ai.embedding_dimensions", embedding.Length);
             _logger.LogInformation(
                 "Generated embedding using {ModelId} (dimensions: {Dimensions})",
                 _options.EmbeddingModelId, embedding.Length);
@@ -190,6 +207,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate embedding using {ModelId}", _options.EmbeddingModelId);
             throw new GenesisException(
                 nameof(BedrockAIAssistantProvider),
@@ -203,6 +221,12 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         string prompt,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PervaxisActivitySource.StartActivity("ai.generate_image", ActivityKind.Client);
+        activity?.SetTag("ai.system", "bedrock");
+        activity?.SetTag("ai.operation", "generate_image");
+        activity?.SetTag("ai.model", _options.ImageModelId);
+        AddTenantTags(activity);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt, nameof(prompt));
 
         try
@@ -233,6 +257,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
 
             var imageData = ParseStableDiffusionResponse(responseBody);
 
+            activity?.SetTag("ai.image_size", imageData.Length);
             _logger.LogInformation(
                 "Generated image using {ModelId} (size: {Size} bytes)",
                 _options.ImageModelId, imageData.Length);
@@ -241,6 +266,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate image using {ModelId}", _options.ImageModelId);
             throw new GenesisException(
                 nameof(BedrockAIAssistantProvider),
@@ -408,5 +434,16 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
 
         _disposed = true;
         _logger.LogInformation("BedrockAIAssistantProvider disposed");
+    }
+
+    private void AddTenantTags(Activity? activity)
+    {
+        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        {
+            return;
+        }
+
+        activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
+        activity.SetTag("tenant.name", _tenantContext.TenantName);
     }
 }
