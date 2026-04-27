@@ -17,15 +17,19 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Reporting.AWS.Options;
 
 namespace Pervaxis.Genesis.Reporting.AWS.Providers;
@@ -41,7 +45,24 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.reporting.operations",
+        "1",
+        "Total number of reporting operations");
+
+    private static readonly Counter<long> _queriesExecuted = PervaxisMeter.CreateCounter<long>(
+        "genesis.reporting.queries.executed",
+        "1",
+        "Total number of queries executed");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.reporting.operation.duration",
+        "ms",
+        "Duration of reporting operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MetabaseReportingProvider"/> class.
@@ -81,11 +102,16 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "MetabaseReporting");
 
         _logger.LogInformation(
-            "MetabaseReportingProvider initialized for {BaseUrl}, tenant isolation: {TenantIsolation}",
+            "MetabaseReportingProvider initialized for {BaseUrl}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.BaseUrl,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -113,6 +139,10 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "MetabaseReporting");
     }
 
     /// <inheritdoc />
@@ -120,6 +150,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         string query,
         CancellationToken cancellationToken = default) where T : class
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.execute_query", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "execute_query");
@@ -139,10 +170,12 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 }
             };
 
-            var response = await _httpClient.PostAsJsonAsync(
-                "/api/dataset",
-                requestBody,
-                _jsonOptions,
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.PostAsJsonAsync(
+                    "/api/dataset",
+                    requestBody,
+                    _jsonOptions,
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -164,12 +197,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Query executed successfully, returned {Count} rows",
                 mappedResults.Count);
 
+            var tags = GetMetricTags("execute_query", "success");
+            _operationsCounter.Add(1, tags);
+            _queriesExecuted.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return mappedResults;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to execute query");
+
+            var tags = GetMetricTags("execute_query", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
                 $"Failed to execute query: {ex.Message}",
@@ -182,6 +225,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         string dashboardId,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.get_dashboard", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "get_dashboard");
@@ -192,8 +236,10 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
         try
         {
-            var response = await _httpClient.GetAsync(
-                new Uri($"/api/dashboard/{dashboardId}", UriKind.Relative),
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.GetAsync(
+                    new Uri($"/api/dashboard/{dashboardId}", UriKind.Relative),
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -206,11 +252,19 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Retrieved dashboard {DashboardId}",
                 dashboardId);
 
+            var tags = GetMetricTags("get_dashboard", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return dashboard ?? new object();
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+            var tags = GetMetricTags("get_dashboard", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
             _logger.LogError(ex, "Failed to get dashboard {DashboardId}", dashboardId);
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
@@ -225,6 +279,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         object definition,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.create_dashboard", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "create_dashboard");
@@ -242,10 +297,12 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 parameters = Array.Empty<object>()
             };
 
-            var response = await _httpClient.PostAsJsonAsync(
-                "/api/dashboard",
-                requestBody,
-                _jsonOptions,
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.PostAsJsonAsync(
+                    "/api/dashboard",
+                    requestBody,
+                    _jsonOptions,
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -261,12 +318,21 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Created dashboard '{Name}' with ID {DashboardId}",
                 name, dashboardId);
 
+            var tags = GetMetricTags("create_dashboard", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return dashboardId;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to create dashboard '{Name}'", name);
+
+            var tags = GetMetricTags("create_dashboard", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
                 $"Failed to create dashboard: {ex.Message}",
@@ -280,6 +346,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         string format,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.export_report", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "export_report");
@@ -302,9 +369,11 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         {
 
             using var content = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync(
-                new Uri(endpoint, UriKind.Relative),
-                content,
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _httpClient.PostAsync(
+                    new Uri(endpoint, UriKind.Relative),
+                    content,
+                    ct),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -316,12 +385,21 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Exported report {ReportId} as {Format} ({Size} bytes)",
                 reportId, format, data.Length);
 
+            var tags = GetMetricTags("export_report", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return data;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to export report {ReportId} as {Format}", reportId, format);
+
+            var tags = GetMetricTags("export_report", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
                 $"Failed to export report: {ex.Message}",
@@ -451,5 +529,19 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
     {
         public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }

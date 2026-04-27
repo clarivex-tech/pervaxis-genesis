@@ -256,6 +256,39 @@ Genesis uses three GitHub Actions workflows:
 2. **deploy.yml** - Main/develop branch tracking with SonarCloud (wait=false, tracking only)
 3. **publish.yml** - NuGet package publishing on version tags
 
+### Required GitHub Secrets
+
+All workflows require these secrets (configured at repository level):
+
+1. **`GITHUB_PACKAGES_PAT`** (Required)
+   - Purpose: Restore NuGet packages from GitHub Packages
+   - Scopes: `read:packages`
+   - Used in: All workflows for `dotnet restore`
+
+2. **`SONAR_TOKEN`** (Required for code quality)
+   - Purpose: SonarCloud code analysis
+   - Generate at: https://sonarcloud.io/account/security
+
+3. **`NUGET_AUTH_TOKEN`** (Optional - for NuGet.org publishing)
+   - Purpose: Publish packages to NuGet.org
+   - Only needed for public releases
+
+### GitHub Secrets Setup
+
+**Add secrets to repository:**
+1. Go to: `https://github.com/clarivex-tech/pervaxis-genesis/settings/secrets/actions`
+2. Click **New repository secret**
+3. Add each secret listed above
+
+**⚠️ Security Best Practices:**
+- ✅ Never commit tokens to source control
+- ✅ Use environment variables for local development (`%GITHUB_PACKAGES_PAT%` in `nuget.config`)
+- ✅ Rotate tokens every 90 days
+- ✅ Use minimum required scopes
+- ✅ Revoke tokens immediately if compromised
+
+**Documentation:** See `.github/SETUP_SECRETS.md` for detailed setup guide
+
 ### SonarCloud Configuration
 - **No GitHub App integration** - Manual workflow-based scanning only
 - **Token**: Stored in GitHub secrets as `SONAR_TOKEN`
@@ -307,6 +340,39 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 ---
 
+## Local Development Setup
+
+### Environment Variables (Required)
+
+Set `GITHUB_PACKAGES_PAT` for NuGet package restoration:
+
+**Windows (PowerShell):**
+```powershell
+[Environment]::SetEnvironmentVariable("GITHUB_PACKAGES_PAT", "ghp_YOUR_TOKEN_HERE", "User")
+# Restart terminal after setting
+```
+
+**Windows (CMD):**
+```cmd
+setx GITHUB_PACKAGES_PAT "ghp_YOUR_TOKEN_HERE"
+# Restart terminal after setting
+```
+
+**Linux/macOS:**
+```bash
+echo 'export GITHUB_PACKAGES_PAT="ghp_YOUR_TOKEN_HERE"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Generate Token:**
+1. Go to: https://github.com/settings/tokens/new
+2. Name: `Pervaxis Genesis - Package Registry`
+3. Scopes: `read:packages` ✓
+4. Generate and copy token
+5. Set environment variable (see above)
+
+---
+
 ## Build Commands
 
 ```bash
@@ -322,7 +388,7 @@ dotnet test Pervaxis.Genesis.slnx --configuration Release
 # Run tests with coverage
 dotnet test Pervaxis.Genesis.slnx --collect:"XPlat Code Coverage"
 
-# Restore packages
+# Restore packages (requires GITHUB_PACKAGES_PAT environment variable)
 dotnet restore Pervaxis.Genesis.slnx
 ```
 
@@ -335,6 +401,7 @@ dotnet restore Pervaxis.Genesis.slnx
 - **Git Workflow**: `.claude/guides/GIT_WORKFLOW.md` ⚠️ **READ THIS FOR PR PROCESS**
 - **Core Abstractions Compliance**: `.claude/guides/CORE_ABSTRACTIONS_COMPLIANCE.md` ⚠️ **READ THIS FIRST**
 - **CI Setup Guide**: `.claude/guides/ci-sonarcloud-setup.md`
+- **GitHub Secrets Setup**: `.github/SETUP_SECRETS.md` 🔐 **Setup guide for tokens/secrets**
 - **Skills**: `.claude/skills/`
 
 ---

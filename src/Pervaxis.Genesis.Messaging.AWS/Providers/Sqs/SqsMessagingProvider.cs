@@ -17,6 +17,7 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text.Json;
 using Amazon;
@@ -24,10 +25,13 @@ using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
@@ -50,6 +54,28 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSQS> _sqsClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.operations",
+        "1",
+        "Total number of messaging operations");
+
+    private static readonly Counter<long> _messagesSent = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.messages.sent",
+        "1",
+        "Total number of messages sent");
+
+    private static readonly Counter<long> _messagesReceived = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.messages.received",
+        "1",
+        "Total number of messages received");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.messaging.operation.duration",
+        "ms",
+        "Duration of messaging operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of <see cref="SqsMessagingProvider"/> for production use.
@@ -73,11 +99,16 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         _sqsClient = new Lazy<IAmazonSQS>(CreateClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SqsMessaging");
 
         _logger.LogInformation(
-            "SqsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}",
+            "SqsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +133,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         _sqsClient = new Lazy<IAmazonSQS>(() => sqsClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SqsMessaging");
     }
 
     /// <inheritdoc/>
@@ -110,6 +145,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         T message,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.publish", ActivityKind.Producer);
         activity?.SetTag("messaging.system", "sqs");
         activity?.SetTag("messaging.destination", destination);
@@ -132,14 +168,20 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             AddTenantAttributes(request.MessageAttributes);
 
-            var response = await _sqsClient.Value
-                .SendMessageAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.SendMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.message_id", response.MessageId);
             _logger.LogDebug(
                 "Published message {MessageId} to SQS queue {QueueUrl}",
                 response.MessageId, queueUrl);
+
+            // Record metrics
+            var tags = GetMetricTags("publish", "success", "sqs");
+            _operationsCounter.Add(1, tags);
+            _messagesSent.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             return response.MessageId;
         }
@@ -147,6 +189,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish message to SQS queue {QueueUrl}", queueUrl);
+
+            // Record failure metric
+            var tags = GetMetricTags("publish", "error", "sqs");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS publish operation failed", ex);
         }
     }
@@ -157,6 +205,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         IEnumerable<T> messages,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.publish_batch", ActivityKind.Producer);
         activity?.SetTag("messaging.system", "sqs");
         activity?.SetTag("messaging.destination", destination);
@@ -199,9 +248,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                     Entries = entries
                 };
 
-                var response = await _sqsClient.Value
-                    .SendMessageBatchAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
+                var response = await _resiliencePipeline.ExecuteAsync(
+                    async ct => await _sqsClient.Value.SendMessageBatchAsync(request, ct).ConfigureAwait(false),
+                    cancellationToken);
 
                 if (response.Failed.Count > 0)
                 {
@@ -219,12 +268,25 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             }
 
             activity?.SetTag("messaging.success_count", allMessageIds.Count);
+
+            // Record metrics
+            var tags = GetMetricTags("publish_batch", "success", "sqs");
+            _operationsCounter.Add(1, tags);
+            _messagesSent.Add(allMessageIds.Count, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return allMessageIds;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish batch to SQS queue {QueueUrl}", queueUrl);
+
+            // Record failure metric
+            var tags = GetMetricTags("publish_batch", "error", "sqs");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS batch publish operation failed", ex);
         }
     }
@@ -235,6 +297,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         int maxMessages = 10,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.receive", ActivityKind.Consumer);
         activity?.SetTag("messaging.system", "sqs");
         activity?.SetTag("messaging.destination", queue);
@@ -256,25 +319,39 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 VisibilityTimeout = _options.Sqs.VisibilityTimeoutSeconds
             };
 
-            var response = await _sqsClient.Value
-                .ReceiveMessageAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.ReceiveMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.message_count", response.Messages.Count);
             _logger.LogDebug(
                 "Received {Count} messages from SQS queue {QueueUrl}",
                 response.Messages.Count, queueUrl);
 
-            return response.Messages
+            var result = response.Messages
                 .Select(m => Deserialize<T>(m.Body))
                 .Where(m => m is not null)
                 .Select(m => m!)
                 .ToList();
+
+            // Record metrics
+            var tags = GetMetricTags("receive", "success", "sqs");
+            _operationsCounter.Add(1, tags);
+            _messagesReceived.Add(result.Count, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
+            return result;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to receive messages from SQS queue {QueueUrl}", queueUrl);
+
+            // Record failure metric
+            var tags = GetMetricTags("receive", "error", "sqs");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS receive operation failed", ex);
         }
     }
@@ -285,6 +362,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         string receiptHandle,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.delete", ActivityKind.Client);
         activity?.SetTag("messaging.system", "sqs");
         activity?.SetTag("messaging.destination", queue);
@@ -304,18 +382,30 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 ReceiptHandle = receiptHandle
             };
 
-            await _sqsClient.Value
-                .DeleteMessageAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.DeleteMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.success", true);
             _logger.LogDebug("Deleted message from SQS queue {QueueUrl}", queueUrl);
+
+            // Record metrics
+            var tags = GetMetricTags("delete", "success", "sqs");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return true;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete message from SQS queue {QueueUrl}", queueUrl);
+
+            // Record failure metric
+            var tags = GetMetricTags("delete", "error", "sqs");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SqsMessagingProvider), "SQS delete operation failed", ex);
         }
     }
@@ -414,5 +504,22 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result, string provider)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result },
+            { "provider", provider }
+        };
+
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+
+        return tags;
     }
 }

@@ -17,15 +17,19 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Amazon.StepFunctions;
 using Amazon.StepFunctions.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Workflow.AWS.Options;
 
 namespace Pervaxis.Genesis.Workflow.AWS.Providers;
@@ -40,7 +44,24 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonStepFunctions> _client;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.workflow.operations",
+        "1",
+        "Total number of workflow operations");
+
+    private static readonly Counter<long> _executionsStarted = PervaxisMeter.CreateCounter<long>(
+        "genesis.workflow.executions.started",
+        "1",
+        "Total number of workflow executions started");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.workflow.operation.duration",
+        "ms",
+        "Duration of workflow operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StepFunctionsWorkflowProvider"/> class.
@@ -73,11 +94,16 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "StepFunctionsWorkflow");
 
         _logger.LogInformation(
-            "StepFunctionsWorkflowProvider initialized for region {Region} with {Count} state machines, tenant isolation: {TenantIsolation}",
+            "StepFunctionsWorkflowProvider initialized for region {Region} with {Count} state machines, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region, _options.StateMachineArns.Count,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +128,10 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "StepFunctionsWorkflow");
     }
 
     /// <inheritdoc />
@@ -110,6 +140,7 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         object input,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("workflow.start", ActivityKind.Client);
         activity?.SetTag("workflow.system", "stepfunctions");
         activity?.SetTag("workflow.operation", "start");
@@ -139,12 +170,19 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 Input = inputJson
             };
 
-            var response = await _client.Value.StartExecutionAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.StartExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.execution_id", response.ExecutionArn);
             _logger.LogInformation(
                 "Started workflow execution for {WorkflowName} with ExecutionArn {ExecutionArn}",
                 workflowName, response.ExecutionArn);
+
+            var tags = GetMetricTags("start_execution", "success");
+            _operationsCounter.Add(1, tags);
+            _executionsStarted.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             return response.ExecutionArn;
         }
@@ -152,6 +190,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to start workflow execution for {WorkflowName}", workflowName);
+
+            var tags = GetMetricTags("start_execution", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Failed to start workflow: {ex.Message}",
@@ -164,6 +207,7 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         string executionId,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("workflow.get_status", ActivityKind.Client);
         activity?.SetTag("workflow.system", "stepfunctions");
         activity?.SetTag("workflow.operation", "get_status");
@@ -179,12 +223,18 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 ExecutionArn = executionId
             };
 
-            var response = await _client.Value.DescribeExecutionAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.DescribeExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.status", response.Status.Value);
             _logger.LogDebug(
                 "Retrieved status {Status} for execution {ExecutionArn}",
                 response.Status, executionId);
+
+            var tags = GetMetricTags("get_execution_status", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             return response.Status.Value;
         }
@@ -192,6 +242,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, "Execution not found");
             _logger.LogWarning("Execution not found: {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("get_execution_status", "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Execution not found: {executionId}",
@@ -201,6 +256,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get execution status for {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("get_execution_status", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Failed to get execution status: {ex.Message}",
@@ -213,6 +273,7 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         string executionId,
         CancellationToken cancellationToken = default) where T : class
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("workflow.get_output", ActivityKind.Client);
         activity?.SetTag("workflow.system", "stepfunctions");
         activity?.SetTag("workflow.operation", "get_output");
@@ -228,7 +289,9 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 ExecutionArn = executionId
             };
 
-            var response = await _client.Value.DescribeExecutionAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.DescribeExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.status", response.Status.Value);
 
@@ -253,12 +316,21 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 "Retrieved output for execution {ExecutionArn}",
                 executionId);
 
+            var tags = GetMetricTags("get_execution_output", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return output;
         }
         catch (ExecutionDoesNotExistException ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, "Execution not found");
             _logger.LogWarning("Execution not found: {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("get_execution_output", "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Execution not found: {executionId}",
@@ -268,6 +340,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, "Failed to deserialize execution output");
             _logger.LogError(ex, "Failed to deserialize execution output for {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("get_execution_output", "deserialization_error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Failed to deserialize execution output: {ex.Message}",
@@ -277,6 +354,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get execution output for {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("get_execution_output", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Failed to get execution output: {ex.Message}",
@@ -289,6 +371,7 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         string executionId,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("workflow.stop", ActivityKind.Client);
         activity?.SetTag("workflow.system", "stepfunctions");
         activity?.SetTag("workflow.operation", "stop");
@@ -306,12 +389,18 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
                 Cause = "Execution stopped manually via IWorkflow.StopExecutionAsync"
             };
 
-            await _client.Value.StopExecutionAsync(request, cancellationToken);
+            await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.StopExecutionAsync(request, ct),
+                cancellationToken);
 
             activity?.SetTag("workflow.success", true);
             _logger.LogInformation(
                 "Stopped execution {ExecutionArn}",
                 executionId);
+
+            var tags = GetMetricTags("stop_execution", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             return true;
         }
@@ -319,6 +408,11 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, "Execution not found");
             _logger.LogWarning("Execution not found: {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("stop_execution", "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Execution not found: {executionId}",
@@ -328,12 +422,22 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, "Invalid execution ARN");
             _logger.LogError(ex, "Invalid execution ARN: {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("stop_execution", "invalid_arn");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return false;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to stop execution {ExecutionId}", executionId);
+
+            var tags = GetMetricTags("stop_execution", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(StepFunctionsWorkflowProvider),
                 $"Failed to stop execution: {ex.Message}",
@@ -403,5 +507,19 @@ public sealed class StepFunctionsWorkflowProvider : IWorkflow, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }
