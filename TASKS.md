@@ -1,9 +1,9 @@
 # Pervaxis Genesis - Implementation Task List
 
-> **Status:** Phase 0 complete ✅ | All 8 providers implemented ✅ | Resilience ✅ | Metrics ✅ | Security ✅ 
-> **Next Phase:** Sample Microservice (Task 8.1) 
+> **Status:** Phase 0 complete ✅ | All 8 providers implemented ✅ | Resilience ✅ | Metrics ✅ | Security ✅ | Provider Snippets ✅ 
+> **Next Phase:** Documentation (Task 6.2 - Architecture Decision Records) 
 > **Created:** 2026-04-21  
-> **Updated:** 2026-04-27 (Security Review Complete)
+> **Updated:** 2026-04-27 (Provider Snippets Complete)
 
 ---
 
@@ -29,7 +29,8 @@
 - ✅ **Task 4.1.4 COMPLETE:** Resilience Integration — Polly v8 across all 8 providers, 390/390 tests passing
 - ✅ **Task 4.2 COMPLETE:** Observability Metrics Integration — All 39 methods across 8 providers, 390/390 tests passing
 - ✅ **Task 5.4 COMPLETE:** Security Review — 2 medium-severity vulnerabilities fixed, 397/397 tests passing
-- 🔄 **Next:** Sample Microservice (Task 8.1) — Demonstrate real-world Genesis usage
+- ✅ **Task 8.1 COMPLETE:** Genesis Provider Snippets — All 8 providers with config, DI, usage, testing patterns
+- 🔄 **Next:** Architecture Decision Records (Task 6.2) — Document key architectural decisions
 
 ---
 
@@ -958,8 +959,47 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 
 ## Phase 8: Samples & Demos (Priority: LOW)
 
-### Task 8.1: Sample Applications
-- [ ] Create `samples/` folder in repository
+### Task 8.1: Genesis Provider Snippets ✅
+**Status**: 🟢 **COMPLETE**  
+**Completed**: 2026-04-27
+
+**Objective:** Create comprehensive provider integration guide with usage snippets for all 8 Genesis providers to be included in every Forge-generated print.
+
+#### Deliverables ✅
+- [x] ✅ Created `.forge/guides/GENESIS_PROVIDERS.md` (1,800+ lines)
+- [x] ✅ All 8 providers documented with complete examples:
+  1. **Caching (ElastiCache)** - Redis with key sanitization
+  2. **Messaging (SQS/SNS)** - Event-driven architecture
+  3. **File Storage (S3)** - Document storage with presigned URLs
+  4. **Search (OpenSearch)** - Full-text search and indexing
+  5. **Notifications (SES/SNS)** - Email, SMS, push notifications
+  6. **Workflow (Step Functions)** - Multi-step business processes
+  7. **AI Assistance (Bedrock)** - Text generation, recommendations, image generation
+  8. **Reporting (Metabase)** - Dashboards and analytics
+
+#### Content Per Provider ✅
+Each snippet includes:
+- ✅ Configuration (appsettings.json)
+- ✅ Dependency Injection (Program.cs)
+- ✅ NuGet package reference
+- ✅ Realistic usage example with domain code
+- ✅ Testing patterns with NSubstitute
+
+#### Additional Content ✅
+- ✅ General best practices (CancellationToken, error handling, multi-tenancy)
+- ✅ LocalStack support examples
+- ✅ External service integration examples (Stripe, Twilio)
+- ✅ Structured logging patterns
+
+#### Architecture Decision ✅
+**Every Forge-generated print includes complete GENESIS_PROVIDERS.md:**
+- Rationale: Future-proof - can add providers as domain grows
+- Benefit: Self-contained documentation in every microservice
+- Minimal overhead: ~10KB documentation file
+
+**Note:** Initially considered creating full OrderService reference application, but decided provider snippets alone are sufficient and more maintainable.
+
+### Task 8.2: Sample Applications (Optional - Future)
 - [ ] Create console app demonstrating each provider
 - [ ] Create ASP.NET Core web app using multiple providers
 - [ ] Create AWS Lambda function using Genesis providers
