@@ -703,6 +703,16 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// </summary>
     private string GetFullKey(string key)
     {
+        // Validate key doesn't contain path traversal sequences
+        if (key.Contains("../", StringComparison.Ordinal) ||
+            key.Contains("..\\", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "File key cannot contain path traversal sequences (../ or ..\\). " +
+                "Use forward slashes (/) for path separators.",
+                nameof(key));
+        }
+
         var parts = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(_options.KeyPrefix))
@@ -715,9 +725,23 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             parts.Add($"tenant-{_tenantContext.TenantId.Value}");
         }
 
-        parts.Add(key.TrimStart('/'));
+        // Normalize the key: convert backslashes, remove leading/trailing slashes, collapse multiple slashes
+        var normalizedKey = NormalizeS3Key(key);
+        parts.Add(normalizedKey);
 
         return string.Join("/", parts);
+    }
+
+    /// <summary>
+    /// Normalizes S3 keys by converting backslashes and collapsing multiple slashes.
+    /// Note: Preserves leading/trailing slashes as they're meaningful in S3 (prefix matching).
+    /// </summary>
+    private static string NormalizeS3Key(string key)
+    {
+        return key
+            .Replace("\\", "/", StringComparison.Ordinal)     // Convert backslashes to forward slashes
+            .Replace("//", "/", StringComparison.Ordinal)     // Collapse multiple slashes to single slash
+            .TrimStart('/');                                  // Only trim leading slashes (trailing slashes matter for prefixes)
     }
 
     private Dictionary<string, string> BuildTenantTags()
