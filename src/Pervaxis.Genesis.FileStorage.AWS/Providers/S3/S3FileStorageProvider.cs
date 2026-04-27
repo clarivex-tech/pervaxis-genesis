@@ -17,6 +17,7 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
@@ -25,6 +26,7 @@ using Microsoft.Extensions.Options;
 using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
@@ -43,6 +45,27 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     private readonly Lazy<IAmazonS3> _s3Client;
     private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.filestorage.operations",
+        "1",
+        "Total number of file storage operations");
+
+    private static readonly Counter<long> _filesUploaded = PervaxisMeter.CreateCounter<long>(
+        "genesis.filestorage.files.uploaded",
+        "1",
+        "Total number of files uploaded");
+
+    private static readonly Histogram<long> _uploadSize = PervaxisMeter.CreateHistogram<long>(
+        "genesis.filestorage.upload.size",
+        "bytes",
+        "Size of uploaded files in bytes");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.filestorage.operation.duration",
+        "ms",
+        "Duration of file storage operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="S3FileStorageProvider"/> class.
@@ -127,6 +150,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         IDictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.upload", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -164,12 +188,23 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 contentLength,
                 _options.BucketName);
 
+            var tags = GetMetricTags("upload", "success");
+            _operationsCounter.Add(1, tags);
+            _filesUploaded.Add(1, tags);
+            _uploadSize.Record(contentLength, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return fullKey;
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to upload file {Key} to S3", key);
+
+            var tags = GetMetricTags("upload", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to upload file: {key}", ex);
         }
     }
@@ -177,6 +212,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// <inheritdoc />
     public async Task<Stream?> DownloadAsync(string key, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.download", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -215,18 +251,32 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             memoryStream.Position = 0;
             response.Dispose();
 
+            var tags = GetMetricTags("download", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return memoryStream;
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             activity?.SetTag("storage.found", false);
             _logger.LogWarning("File {Key} not found in bucket {Bucket}", key, _options.BucketName);
+
+            var tags = GetMetricTags("download", "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return null;
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to download file {Key} from S3", key);
+
+            var tags = GetMetricTags("download", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to download file: {key}", ex);
         }
     }
@@ -234,6 +284,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// <inheritdoc />
     public async Task<bool> DeleteAsync(string key, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.delete", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -262,12 +313,21 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             activity?.SetTag("storage.success", true);
             _logger.LogInformation("Successfully deleted file {Key} from bucket {Bucket}", fullKey, _options.BucketName);
 
+            var tags = GetMetricTags("delete", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return true;
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete file {Key} from S3", key);
+
+            var tags = GetMetricTags("delete", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to delete file: {key}", ex);
         }
     }
@@ -275,6 +335,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// <inheritdoc />
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.exists", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -303,18 +364,32 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             activity?.SetTag("storage.exists", true);
             _logger.LogDebug("File {Key} exists in bucket {Bucket}", fullKey, _options.BucketName);
 
+            var tags = GetMetricTags("exists", "found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return true;
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             activity?.SetTag("storage.exists", false);
             _logger.LogDebug("File {Key} does not exist in bucket {Bucket}", key, _options.BucketName);
+
+            var tags = GetMetricTags("exists", "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return false;
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to check existence of file {Key} in S3", key);
+
+            var tags = GetMetricTags("exists", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to check file existence: {key}", ex);
         }
     }
@@ -325,6 +400,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         TimeSpan expiry,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.get_presigned_url", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -362,12 +438,21 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 fullKey,
                 expiry);
 
+            var tags = GetMetricTags("get_presigned_url", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return url;
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate presigned URL for file {Key}", key);
+
+            var tags = GetMetricTags("get_presigned_url", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to generate presigned URL: {key}", ex);
         }
     }
@@ -377,6 +462,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         string key,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.get_metadata", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -404,18 +490,32 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
             _logger.LogInformation("Retrieved metadata for file {Key}", fullKey);
 
+            var tags = GetMetricTags("get_metadata", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return response.Metadata.Keys.ToDictionary(k => k, k => response.Metadata[k]);
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             activity?.SetStatus(ActivityStatusCode.Error, "File not found");
             _logger.LogWarning("File {Key} not found in bucket {Bucket}", key, _options.BucketName);
+
+            var tags = GetMetricTags("get_metadata", "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"File not found: {key}", ex);
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get metadata for file {Key} from S3", key);
+
+            var tags = GetMetricTags("get_metadata", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to get metadata: {key}", ex);
         }
     }
@@ -425,6 +525,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         string? prefix = null,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("storage.list", ActivityKind.Client);
         activity?.SetTag("storage.system", "s3");
         activity?.SetTag("storage.bucket", _options.BucketName);
@@ -475,12 +576,21 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 fullPrefix,
                 _options.BucketName);
 
+            var tags = GetMetricTags("list", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return keys;
         }
         catch (AmazonS3Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to list files with prefix {Prefix} from S3", prefix);
+
+            var tags = GetMetricTags("list", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to list files with prefix: {prefix}", ex);
         }
     }
@@ -665,5 +775,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }

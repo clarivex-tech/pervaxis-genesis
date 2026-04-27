@@ -17,6 +17,7 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -25,6 +26,7 @@ using Microsoft.Extensions.Options;
 using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
@@ -45,6 +47,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.reporting.operations",
+        "1",
+        "Total number of reporting operations");
+
+    private static readonly Counter<long> _queriesExecuted = PervaxisMeter.CreateCounter<long>(
+        "genesis.reporting.queries.executed",
+        "1",
+        "Total number of queries executed");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.reporting.operation.duration",
+        "ms",
+        "Duration of reporting operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MetabaseReportingProvider"/> class.
@@ -132,6 +150,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         string query,
         CancellationToken cancellationToken = default) where T : class
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.execute_query", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "execute_query");
@@ -178,12 +197,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Query executed successfully, returned {Count} rows",
                 mappedResults.Count);
 
+            var tags = GetMetricTags("execute_query", "success");
+            _operationsCounter.Add(1, tags);
+            _queriesExecuted.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return mappedResults;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to execute query");
+
+            var tags = GetMetricTags("execute_query", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
                 $"Failed to execute query: {ex.Message}",
@@ -196,6 +225,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         string dashboardId,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.get_dashboard", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "get_dashboard");
@@ -222,11 +252,19 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Retrieved dashboard {DashboardId}",
                 dashboardId);
 
+            var tags = GetMetricTags("get_dashboard", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return dashboard ?? new object();
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+            var tags = GetMetricTags("get_dashboard", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
             _logger.LogError(ex, "Failed to get dashboard {DashboardId}", dashboardId);
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
@@ -241,6 +279,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         object definition,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.create_dashboard", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "create_dashboard");
@@ -279,12 +318,21 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Created dashboard '{Name}' with ID {DashboardId}",
                 name, dashboardId);
 
+            var tags = GetMetricTags("create_dashboard", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return dashboardId;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to create dashboard '{Name}'", name);
+
+            var tags = GetMetricTags("create_dashboard", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
                 $"Failed to create dashboard: {ex.Message}",
@@ -298,6 +346,7 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
         string format,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("reporting.export_report", ActivityKind.Client);
         activity?.SetTag("reporting.system", "metabase");
         activity?.SetTag("reporting.operation", "export_report");
@@ -336,12 +385,21 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
                 "Exported report {ReportId} as {Format} ({Size} bytes)",
                 reportId, format, data.Length);
 
+            var tags = GetMetricTags("export_report", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return data;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to export report {ReportId} as {Format}", reportId, format);
+
+            var tags = GetMetricTags("export_report", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(MetabaseReportingProvider),
                 $"Failed to export report: {ex.Message}",
@@ -471,5 +529,19 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
     {
         public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }
