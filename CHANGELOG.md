@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-04-27
+
+### 🔒 Security Fixes
+
+**Critical security improvements:**
+
+- **[SECURITY]** Fixed cache key injection vulnerability in ElastiCache provider (CWE-74)
+  - Sanitizes user-provided keys to prevent tenant isolation bypass
+  - Replaces colons and control characters in cache keys
+  - Prevents cross-tenant data access via crafted keys
+
+- **[SECURITY]** Fixed path traversal vulnerability in S3 FileStorage provider (CWE-22)
+  - Validates S3 keys to reject `../` and `..\` sequences
+  - Prevents directory traversal attacks
+  - Normalizes paths while preserving S3 prefix semantics
+
+### 🧪 Testing
+
+- Added 7 new security-focused unit tests
+- All 397/397 tests passing
+- Security validation for tenant isolation
+
+### 📚 Documentation
+
+- Created comprehensive `GENESIS_PROVIDERS.md` guide (1,800+ lines)
+- Complete usage patterns for all 8 providers
+- Configuration, DI, testing examples for each provider
+- Best practices and security guidelines
+
+### 🔧 Infrastructure
+
+- Fixed GitHub Actions permissions for release creation
+- Updated CI/CD workflows for production readiness
+
+---
+
 ## [1.0.0] - 2026-04-26
 
 ### 🎉 Initial Release
@@ -94,4 +130,5 @@ Copyright © 2026 Clarivex Technologies Private Limited.
 
 ---
 
+[1.0.1]: https://github.com/clarivex-tech/pervaxis-genesis/releases/tag/v1.0.1
 [1.0.0]: https://github.com/clarivex-tech/pervaxis-genesis/releases/tag/v1.0.0

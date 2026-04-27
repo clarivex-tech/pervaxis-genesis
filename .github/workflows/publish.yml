@@ -28,7 +28,7 @@ on:
         default: ''
 
 permissions:
-  contents: read
+  contents: write   # required to create GitHub releases
   packages: write   # required to push to GitHub Packages
 
 env:
