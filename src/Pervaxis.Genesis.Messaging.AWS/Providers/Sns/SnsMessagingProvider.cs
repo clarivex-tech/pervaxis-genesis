@@ -17,6 +17,7 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text.Json;
 using Amazon;
@@ -24,10 +25,13 @@ using Amazon.SimpleNotificationService;
 using Amazon.SimpleNotificationService.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sns;
@@ -50,6 +54,23 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
+
+    // Metrics (shared with SQS via static fields)
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.operations",
+        "1",
+        "Total number of messaging operations");
+
+    private static readonly Counter<long> _messagesSent = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.messages.sent",
+        "1",
+        "Total number of messages sent");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.messaging.operation.duration",
+        "ms",
+        "Duration of messaging operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of <see cref="SnsMessagingProvider"/> for production use.
@@ -73,11 +94,16 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SnsMessaging");
 
         _logger.LogInformation(
-            "SnsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}",
+            "SnsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -102,6 +128,10 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => snsClient);
         _jsonOptions = BuildJsonOptions();
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "SnsMessaging");
     }
 
     /// <inheritdoc/>
@@ -110,6 +140,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         T message,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.publish", ActivityKind.Producer);
         activity?.SetTag("messaging.system", "sns");
         activity?.SetTag("messaging.destination", destination);
@@ -132,14 +163,19 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
             AddTenantAttributes(request.MessageAttributes);
 
-            var response = await _snsClient.Value
-                .PublishAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.PublishAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.message_id", response.MessageId);
             _logger.LogDebug(
                 "Published message {MessageId} to SNS topic {TopicArn}",
                 response.MessageId, topicArn);
+
+            var tags = GetMetricTags("publish", "success", "sns");
+            _operationsCounter.Add(1, tags);
+            _messagesSent.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             return response.MessageId;
         }
@@ -147,6 +183,11 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish message to SNS topic {TopicArn}", topicArn);
+
+            var tags = GetMetricTags("publish", "error", "sns");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SnsMessagingProvider), "SNS publish operation failed", ex);
         }
     }
@@ -157,6 +198,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         IEnumerable<T> messages,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.publish_batch", ActivityKind.Producer);
         activity?.SetTag("messaging.system", "sns");
         activity?.SetTag("messaging.destination", destination);
@@ -199,9 +241,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                     PublishBatchRequestEntries = entries
                 };
 
-                var response = await _snsClient.Value
-                    .PublishBatchAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
+                var response = await _resiliencePipeline.ExecuteAsync(
+                    async ct => await _snsClient.Value.PublishBatchAsync(request, ct).ConfigureAwait(false),
+                    cancellationToken);
 
                 if (response.Failed.Count > 0)
                 {
@@ -219,12 +261,23 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             }
 
             activity?.SetTag("messaging.success_count", allMessageIds.Count);
+
+            var tags = GetMetricTags("publish_batch", "success", "sns");
+            _operationsCounter.Add(1, tags);
+            _messagesSent.Add(allMessageIds.Count, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return allMessageIds;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish batch to SNS topic {TopicArn}", topicArn);
+
+            var tags = GetMetricTags("publish_batch", "error", "sns");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SnsMessagingProvider), "SNS batch publish operation failed", ex);
         }
     }
@@ -263,6 +316,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         string endpoint,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.subscribe", ActivityKind.Client);
         activity?.SetTag("messaging.system", "sns");
         activity?.SetTag("messaging.destination", topic);
@@ -286,14 +340,18 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 Endpoint = endpoint
             };
 
-            var response = await _snsClient.Value
-                .SubscribeAsync(request, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _snsClient.Value.SubscribeAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
 
             activity?.SetTag("messaging.subscription_arn", response.SubscriptionArn);
             _logger.LogInformation(
                 "Subscribed endpoint {Endpoint} to SNS topic {TopicArn} (SubscriptionArn={SubscriptionArn})",
                 endpoint, topicArn, response.SubscriptionArn);
+
+            var tags = GetMetricTags("subscribe", "success", "sns");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             return response.SubscriptionArn;
         }
@@ -301,6 +359,11 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to subscribe {Endpoint} to SNS topic {TopicArn}", endpoint, topicArn);
+
+            var tags = GetMetricTags("subscribe", "error", "sns");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(SnsMessagingProvider), "SNS subscribe operation failed", ex);
         }
     }
@@ -409,5 +472,20 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result, string provider)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result },
+            { "provider", provider }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }

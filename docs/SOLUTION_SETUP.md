@@ -174,6 +174,74 @@ GenerateDocumentationFile: true
 
 ---
 
+## Environment Setup
+
+### Prerequisites
+
+Before building Genesis, ensure you have:
+
+1. **.NET SDK 10.0.200 or later**
+   ```bash
+   dotnet --version  # Should be 10.0.200+
+   ```
+
+2. **GitHub Personal Access Token (Required)**
+   
+   Genesis depends on internal packages from GitHub Packages (`Pervaxis.Core.*`). You must set up authentication:
+
+   **Windows (PowerShell):**
+   ```powershell
+   [Environment]::SetEnvironmentVariable("GITHUB_PACKAGES_PAT", "ghp_YOUR_TOKEN", "User")
+   # Restart terminal/IDE after setting
+   ```
+
+   **Linux/macOS:**
+   ```bash
+   echo 'export GITHUB_PACKAGES_PAT="ghp_YOUR_TOKEN"' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+
+   **Generate Token:**
+   - Go to: https://github.com/settings/tokens/new
+   - Token name: `Pervaxis Genesis - Package Registry`
+   - Scopes: Select **`read:packages`** ✓
+   - Generate token and copy it
+   - Set environment variable (see commands above)
+
+   > 📖 **Detailed Guide:** [../.github/SETUP_SECRETS.md](../.github/SETUP_SECRETS.md)
+
+3. **Verify Environment Setup:**
+   ```bash
+   # Check environment variable is set
+   echo $env:GITHUB_PACKAGES_PAT  # PowerShell
+   echo %GITHUB_PACKAGES_PAT%     # CMD
+   echo $GITHUB_PACKAGES_PAT      # Linux/macOS
+   
+   # Test package restoration
+   dotnet restore Pervaxis.Genesis.slnx
+   ```
+
+### NuGet Configuration
+
+The `nuget.config` file is configured to use environment variables for authentication:
+
+```xml
+<packageSources>
+  <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+  <add key="github" value="https://nuget.pkg.github.com/clarivex-tech/index.json" />
+</packageSources>
+<packageSourceCredentials>
+  <github>
+    <add key="Username" value="clarivex-tech" />
+    <add key="ClearTextPassword" value="%GITHUB_PACKAGES_PAT%" />
+  </github>
+</packageSourceCredentials>
+```
+
+**Security Note:** ⚠️ Never commit GitHub tokens to source control. Always use environment variables.
+
+---
+
 ## Build Verification
 
 ### Initial Build Results

@@ -59,3 +59,10 @@ nunit-*.xml
 
 # Claude Code local settings (may contain sensitive tokens)
 .claude/settings.local.json
+
+# Temporary documentation and working notes
+METRICS_CONTINUATION.md
+PR_RESILIENCE.md
+RESILIENCE_SUMMARY.md
+WAITING_FOR_CORE_METRICS.md
+GITHUB_SECRETS_SETUP_SUMMARY.md

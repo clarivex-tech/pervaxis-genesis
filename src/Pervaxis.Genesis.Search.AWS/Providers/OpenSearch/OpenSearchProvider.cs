@@ -17,14 +17,18 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenSearch.Client;
 using OpenSearch.Net;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Search.AWS.Options;
 
 namespace Pervaxis.Genesis.Search.AWS.Providers.OpenSearch;
@@ -38,7 +42,24 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     private readonly ILogger<OpenSearchProvider> _logger;
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IOpenSearchClient> _client;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.search.operations",
+        "1",
+        "Total number of search operations");
+
+    private static readonly Counter<long> _queriesExecuted = PervaxisMeter.CreateCounter<long>(
+        "genesis.search.queries.executed",
+        "1",
+        "Total number of search queries executed");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.search.operation.duration",
+        "ms",
+        "Duration of search operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OpenSearchProvider"/> class.
@@ -80,10 +101,16 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
             return new OpenSearchClient(connectionSettings);
         });
 
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "OpenSearch");
+
         _logger.LogInformation(
-            "OpenSearchProvider initialized for domain {DomainEndpoint}, tenant isolation: {TenantIsolation}",
+            "OpenSearchProvider initialized for domain {DomainEndpoint}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.DomainEndpoint,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -104,6 +131,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         _options = options.Value;
         _logger = logger;
         _client = new Lazy<IOpenSearchClient>(() => client);
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "OpenSearch");
 
         _options.Validate();
     }
@@ -115,6 +146,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         T document,
         CancellationToken cancellationToken = default) where T : class
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("search.index", ActivityKind.Client);
         activity?.SetTag("search.system", "opensearch");
         activity?.SetTag("search.operation", "index");
@@ -134,9 +166,11 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 id,
                 fullIndex);
 
-            var response = await _client.Value.IndexAsync(document, idx => idx
-                .Index(fullIndex)
-                .Id(id), cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.IndexAsync(document, idx => idx
+                    .Index(fullIndex)
+                    .Id(id), ct),
+                cancellationToken);
 
             if (!response.IsValid)
             {
@@ -156,12 +190,21 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 id,
                 fullIndex);
 
+            var tags = GetMetricTags("index", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return true;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to index document {Id} to index {Index}", id, index);
+
+            var tags = GetMetricTags("index", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to index document: {id}", ex);
         }
     }
@@ -172,6 +215,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         string query,
         CancellationToken cancellationToken = default) where T : class
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("search.search", ActivityKind.Client);
         activity?.SetTag("search.system", "opensearch");
         activity?.SetTag("search.operation", "search");
@@ -190,12 +234,14 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 fullIndex,
                 query);
 
-            var response = await _client.Value.SearchAsync<T>(s => s
-                .Index(fullIndex)
-                .Query(q => q
-                    .QueryString(qs => qs
-                        .Query(query)))
-                .Size(_options.DefaultPageSize), cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.SearchAsync<T>(s => s
+                    .Index(fullIndex)
+                    .Query(q => q
+                        .QueryString(qs => qs
+                            .Query(query)))
+                    .Size(_options.DefaultPageSize), ct),
+                cancellationToken);
 
             if (!response.IsValid)
             {
@@ -217,12 +263,22 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 fullIndex,
                 results.Count);
 
+            var tags = GetMetricTags("search", "success");
+            _operationsCounter.Add(1, tags);
+            _queriesExecuted.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return results;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to search index {Index}", index);
+
+            var tags = GetMetricTags("search", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to search index: {index}", ex);
         }
     }
@@ -233,6 +289,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         string id,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("search.delete", ActivityKind.Client);
         activity?.SetTag("search.system", "opensearch");
         activity?.SetTag("search.operation", "delete");
@@ -251,8 +308,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 id,
                 fullIndex);
 
-            var response = await _client.Value.DeleteAsync<object>(id, d => d
-                .Index(fullIndex), cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.DeleteAsync<object>(id, d => d
+                    .Index(fullIndex), ct),
+                cancellationToken);
 
             if (!response.IsValid && response.Result != Result.NotFound)
             {
@@ -274,12 +333,21 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 id,
                 response.Result);
 
+            var tags = GetMetricTags("delete", wasDeleted ? "success" : "not_found");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return wasDeleted;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete document {Id} from index {Index}", id, index);
+
+            var tags = GetMetricTags("delete", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to delete document: {id}", ex);
         }
     }
@@ -290,6 +358,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         IDictionary<string, T> documents,
         CancellationToken cancellationToken = default) where T : class
     {
+        var stopwatch = Stopwatch.StartNew();
         ArgumentException.ThrowIfNullOrWhiteSpace(index);
         ArgumentNullException.ThrowIfNull(documents);
 
@@ -324,7 +393,9 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                     .Document(kvp.Value));
             }
 
-            var response = await _client.Value.BulkAsync(bulkDescriptor, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.BulkAsync(bulkDescriptor, ct),
+                cancellationToken);
 
             if (!response.IsValid)
             {
@@ -355,12 +426,21 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                     fullIndex);
             }
 
+            var tags = GetMetricTags("bulk_index", response.Errors ? "partial_success" : "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return successCount;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to bulk index documents to index {Index}", index);
+
+            var tags = GetMetricTags("bulk_index", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(nameof(OpenSearchProvider), $"Failed to bulk index documents to: {index}", ex);
         }
     }
@@ -411,5 +491,19 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }

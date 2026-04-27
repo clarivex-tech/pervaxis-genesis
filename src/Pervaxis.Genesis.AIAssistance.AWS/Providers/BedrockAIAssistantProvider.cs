@@ -17,16 +17,20 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
 using Amazon.BedrockRuntime;
 using Amazon.BedrockRuntime.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
+using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.AIAssistance.AWS.Options;
 
 namespace Pervaxis.Genesis.AIAssistance.AWS.Providers;
@@ -42,7 +46,24 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonBedrockRuntime> _client;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.ai.operations",
+        "1",
+        "Total number of AI operations");
+
+    private static readonly Counter<long> _tokensGenerated = PervaxisMeter.CreateCounter<long>(
+        "genesis.ai.tokens.generated",
+        "1",
+        "Total number of tokens generated (estimated)");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.ai.operation.duration",
+        "ms",
+        "Duration of AI operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BedrockAIAssistantProvider"/> class.
@@ -75,11 +96,16 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "BedrockAIAssistant");
 
         _logger.LogInformation(
-            "BedrockAIAssistantProvider initialized for region {Region} with text model {TextModel}, tenant isolation: {TenantIsolation}",
+            "BedrockAIAssistantProvider initialized for region {Region} with text model {TextModel}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region, _options.TextModelId,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true);
+            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _options.Resilience.Enabled);
     }
 
     /// <summary>
@@ -104,6 +130,10 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
+            _options.Resilience,
+            _logger,
+            "BedrockAIAssistant");
     }
 
     /// <inheritdoc />
@@ -111,6 +141,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         string prompt,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("ai.generate_text", ActivityKind.Client);
         activity?.SetTag("ai.system", "bedrock");
         activity?.SetTag("ai.operation", "generate_text");
@@ -136,7 +167,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 Accept = "application/json"
             };
 
-            var response = await _client.Value.InvokeModelAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.InvokeModelAsync(request, ct),
+                cancellationToken);
 
             using var reader = new StreamReader(response.Body);
             var responseBody = await reader.ReadToEndAsync(cancellationToken);
@@ -150,12 +183,22 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 "Generated text using {ModelId} (length: {Length} chars)",
                 _options.TextModelId, generatedText.Length);
 
+            var tags = GetMetricTags("generate_text", "success");
+            _operationsCounter.Add(1, tags);
+            _tokensGenerated.Add(generatedText.Length / 4, tags); // Rough token estimate
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return generatedText;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate text using {ModelId}", _options.TextModelId);
+
+            var tags = GetMetricTags("generate_text", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(BedrockAIAssistantProvider),
                 $"Failed to generate text: {ex.Message}",
@@ -168,6 +211,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         string text,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("ai.generate_embedding", ActivityKind.Client);
         activity?.SetTag("ai.system", "bedrock");
         activity?.SetTag("ai.operation", "generate_embedding");
@@ -191,7 +235,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 Accept = "application/json"
             };
 
-            var response = await _client.Value.InvokeModelAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.InvokeModelAsync(request, ct),
+                cancellationToken);
 
             using var reader = new StreamReader(response.Body);
             var responseBody = await reader.ReadToEndAsync(cancellationToken);
@@ -203,12 +249,21 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 "Generated embedding using {ModelId} (dimensions: {Dimensions})",
                 _options.EmbeddingModelId, embedding.Length);
 
+            var tags = GetMetricTags("generate_embedding", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return embedding;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate embedding using {ModelId}", _options.EmbeddingModelId);
+
+            var tags = GetMetricTags("generate_embedding", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(BedrockAIAssistantProvider),
                 $"Failed to generate embedding: {ex.Message}",
@@ -221,6 +276,7 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
         string prompt,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("ai.generate_image", ActivityKind.Client);
         activity?.SetTag("ai.system", "bedrock");
         activity?.SetTag("ai.operation", "generate_image");
@@ -250,7 +306,9 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 Accept = "application/json"
             };
 
-            var response = await _client.Value.InvokeModelAsync(request, cancellationToken);
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _client.Value.InvokeModelAsync(request, ct),
+                cancellationToken);
 
             using var reader = new StreamReader(response.Body);
             var responseBody = await reader.ReadToEndAsync(cancellationToken);
@@ -262,12 +320,21 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
                 "Generated image using {ModelId} (size: {Size} bytes)",
                 _options.ImageModelId, imageData.Length);
 
+            var tags = GetMetricTags("generate_image", "success");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             return imageData;
         }
         catch (Exception ex) when (ex is not GenesisException)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to generate image using {ModelId}", _options.ImageModelId);
+
+            var tags = GetMetricTags("generate_image", "error");
+            _operationsCounter.Add(1, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
             throw new GenesisException(
                 nameof(BedrockAIAssistantProvider),
                 $"Failed to generate image: {ex.Message}",
@@ -445,5 +512,19 @@ public sealed class BedrockAIAssistantProvider : IAIAssistant, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+        return tags;
     }
 }
