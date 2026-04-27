@@ -28,21 +28,44 @@ Pervaxis Genesis provides production-ready AWS service integrations for enterpri
 - AWS CLI v2
 - Docker Desktop (for LocalStack local development)
 - Visual Studio 2022 / Rider / VS Code
+- **GitHub Personal Access Token** with `read:packages` scope (for package restoration)
 
 ## Quick Start
+
+### 1. Setup GitHub Authentication
+
+Genesis depends on internal NuGet packages from GitHub Packages. Set up authentication:
+
+**Windows (PowerShell):**
+```powershell
+[Environment]::SetEnvironmentVariable("GITHUB_PACKAGES_PAT", "ghp_YOUR_TOKEN", "User")
+# Restart terminal
+```
+
+**Linux/macOS:**
+```bash
+echo 'export GITHUB_PACKAGES_PAT="ghp_YOUR_TOKEN"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Generate token:** https://github.com/settings/tokens/new (select `read:packages` scope)
+
+> 📖 **Detailed setup guide:** [.github/SETUP_SECRETS.md](.github/SETUP_SECRETS.md)
+
+### 2. Build and Test
 
 ```bash
 # Clone the repository
 git clone https://github.com/clarivex-tech/pervaxis-genesis.git
 cd pervaxis-genesis
 
-# Restore dependencies
+# Restore dependencies (requires GITHUB_PACKAGES_PAT)
 dotnet restore Pervaxis.Genesis.slnx
 
 # Build
 dotnet build Pervaxis.Genesis.slnx --configuration Release
 
-# Run tests
+# Run tests (390 tests across 8 providers)
 dotnet test Pervaxis.Genesis.slnx --configuration Release
 ```
 
@@ -60,9 +83,11 @@ dotnet add package Pervaxis.Genesis.Search.AWS
 
 ## Documentation
 
+- 🔐 [GitHub Secrets Setup](.github/SETUP_SECRETS.md) - **Start here:** Token and authentication setup
 - [Pervaxis Standards](docs/PERVAXIS_STANDARDS.md) - Code standards and conventions
 - [Project Structure Guide](docs/PROJECT_STRUCTURE_GUIDE.md) - Project organization patterns
 - [Dependency Management](docs/DEPENDENCY_MANAGEMENT.md) - NuGet package guidelines
+- [Solution Setup](docs/SOLUTION_SETUP.md) - Development environment setup
 - [Architecture Decision Records](docs/architecture/) - ADRs for key decisions
 
 ## Contributing

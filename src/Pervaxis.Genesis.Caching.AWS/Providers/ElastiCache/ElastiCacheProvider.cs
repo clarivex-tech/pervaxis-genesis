@@ -17,12 +17,14 @@
  */
 
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
@@ -43,6 +45,27 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     private readonly Lazy<IConnectionMultiplexer> _connection;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
+
+    // Metrics
+    private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.cache.operations",
+        "1",
+        "Total number of cache operations");
+
+    private static readonly Counter<long> _hitsCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.cache.hits",
+        "1",
+        "Total number of cache hits");
+
+    private static readonly Counter<long> _missesCounter = PervaxisMeter.CreateCounter<long>(
+        "genesis.cache.misses",
+        "1",
+        "Total number of cache misses");
+
+    private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+        "genesis.cache.operation.duration",
+        "ms",
+        "Duration of cache operations in milliseconds");
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ElastiCacheProvider"/> class.
@@ -109,6 +132,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.get", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
         activity?.SetTag("cache.operation", "get");
@@ -129,17 +153,34 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
             {
                 activity?.SetTag("cache.hit", false);
                 _logger.LogDebug("Cache miss for key: {Key}", fullKey);
+
+                // Record metrics
+                _operationsCounter.Add(1, GetMetricTags("get", "miss"));
+                _missesCounter.Add(1, GetMetricTags("get", "miss"));
+                _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("get", "miss"));
+
                 return default;
             }
 
             activity?.SetTag("cache.hit", true);
             _logger.LogDebug("Cache hit for key: {Key}", fullKey);
+
+            // Record metrics
+            _operationsCounter.Add(1, GetMetricTags("get", "hit"));
+            _hitsCounter.Add(1, GetMetricTags("get", "hit"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("get", "hit"));
+
             return Deserialize<T>(value!);
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get cached value for key: {Key}", fullKey);
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("get", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("get", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache get operation failed", ex);
         }
     }
@@ -151,6 +192,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.set", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
         activity?.SetTag("cache.operation", "set");
@@ -179,12 +221,22 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                     effectiveExpiry);
             }
 
+            // Record metrics
+            var resultTag = result ? "success" : "failure";
+            _operationsCounter.Add(1, GetMetricTags("set", resultTag));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("set", resultTag));
+
             return result;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to cache value for key: {Key}", fullKey);
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("set", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("set", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache set operation failed", ex);
         }
     }
@@ -192,6 +244,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.remove", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
         activity?.SetTag("cache.operation", "remove");
@@ -214,12 +267,22 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                 _logger.LogDebug("Removed cached value for key: {Key}", fullKey);
             }
 
+            // Record metrics
+            var resultTag = result ? "success" : "not_found";
+            _operationsCounter.Add(1, GetMetricTags("remove", resultTag));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("remove", resultTag));
+
             return result;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to remove cached value for key: {Key}", fullKey);
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("remove", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("remove", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache remove operation failed", ex);
         }
     }
@@ -227,6 +290,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.exists", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
         activity?.SetTag("cache.operation", "exists");
@@ -243,12 +307,23 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                 async ct => await db.KeyExistsAsync(fullKey),
                 cancellationToken);
             activity?.SetTag("cache.exists", result);
+
+            // Record metrics
+            var resultTag = result ? "exists" : "not_found";
+            _operationsCounter.Add(1, GetMetricTags("exists", resultTag));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("exists", resultTag));
+
             return result;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to check existence for key: {Key}", fullKey);
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("exists", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("exists", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache exists operation failed", ex);
         }
     }
@@ -258,6 +333,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         IEnumerable<string> keys,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.get_many", ActivityKind.Client);
         activity?.SetTag("cache.operation", "get_many");
         AddTenantTags(activity);
@@ -290,12 +366,22 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
             activity?.SetTag("cache.key_count", keyList.Count);
             _logger.LogDebug("Retrieved {Count} keys from cache", keyList.Count);
+
+            // Record metrics
+            _operationsCounter.Add(1, GetMetricTags("get_many", "success"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("get_many", "success"));
+
             return result;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get multiple cached values");
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("get_many", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("get_many", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache get many operation failed", ex);
         }
     }
@@ -306,6 +392,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.set_many", ActivityKind.Client);
         activity?.SetTag("cache.operation", "set_many");
         AddTenantTags(activity);
@@ -349,12 +436,22 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                     effectiveExpiry);
             }
 
+            // Record metrics
+            var resultTag = allSucceeded ? "success" : "partial_failure";
+            _operationsCounter.Add(1, GetMetricTags("set_many", resultTag));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("set_many", resultTag));
+
             return allSucceeded;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to cache multiple values");
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("set_many", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("set_many", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache set many operation failed", ex);
         }
     }
@@ -365,6 +462,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.refresh", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
         activity?.SetTag("cache.operation", "refresh");
@@ -391,12 +489,22 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                     effectiveExpiry);
             }
 
+            // Record metrics
+            var resultTag = result ? "success" : "not_found";
+            _operationsCounter.Add(1, GetMetricTags("refresh", resultTag));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("refresh", resultTag));
+
             return result;
         }
         catch (Exception ex)
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to refresh expiry for key: {Key}", fullKey);
+
+            // Record failure metric
+            _operationsCounter.Add(1, GetMetricTags("refresh", "error"));
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("refresh", "error"));
+
             throw new GenesisException(nameof(ElastiCacheProvider), "Cache refresh operation failed", ex);
         }
     }
@@ -485,5 +593,21 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
         activity.SetTag("tenant.id", _tenantContext.TenantId.Value);
         activity.SetTag("tenant.name", _tenantContext.TenantName);
+    }
+
+    private TagList GetMetricTags(string operation, string result)
+    {
+        var tags = new TagList
+        {
+            { "operation", operation },
+            { "result", result }
+        };
+
+        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        {
+            tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+        }
+
+        return tags;
     }
 }

@@ -729,13 +729,116 @@ This task restructures Genesis to use Pervaxis.Core abstractions and adopt cloud
 **Note on Exceptions:**
 - ✅ **Keep** `GenesisException` and `GenesisConfigurationException` - they are provider-specific
 
-### Task 4.2: Observability Metrics (Future)
-- [ ] Add OpenTelemetry metrics to all providers
-- [ ] Cache hit rate, miss rate metrics
-- [ ] Message throughput, queue depth metrics
-- [ ] Operation latency histograms
-- [ ] Circuit breaker state metrics
-- [ ] Error rate by provider metrics
+### Task 4.2: Observability Metrics Integration 🔄
+**Status**: 🟡 **IN PROGRESS** (40% complete)  
+**Branch**: `feature/metrics-integration`  
+**Started**: 2026-04-26
+
+**Objective:** Add OpenTelemetry metrics instrumentation to all 8 Genesis providers using `PervaxisMeter` from Core.Observability v1.3.0.
+
+#### 4.2.1: Core.Observability v1.3.0 Integration ✅
+- [x] ✅ Updated Genesis.Base to Core.Observability v1.3.0
+- [x] ✅ Updated Genesis.Base to Core.Abstractions v1.3.0
+- [x] ✅ Updated nuget.config with GitHub PAT for package access
+- [x] ✅ Solution builds with 0 warnings, 0 errors
+- [x] ✅ All 390 tests passing with new packages
+
+#### 4.2.2: Metrics Implementation Pattern ✅
+**Pattern established in Caching.AWS:**
+
+1. **Add usings:**
+   - `using System.Diagnostics.Metrics;`
+   - `using Pervaxis.Core.Observability.Metrics;`
+
+2. **Add static metrics fields (after existing fields):**
+   ```csharp
+   // Metrics
+   private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
+       "genesis.{module}.operations", "1", "Total number of operations");
+   private static readonly Histogram<double> _operationDuration = PervaxisMeter.CreateHistogram<double>(
+       "genesis.{module}.operation.duration", "ms", "Duration in milliseconds");
+   // Add module-specific metrics (e.g., cache hits/misses, messages sent/received)
+   ```
+
+3. **Add helper method (before closing brace):**
+   ```csharp
+   private TagList GetMetricTags(string operation, string result)
+   {
+       var tags = new TagList { { "operation", operation }, { "result", result } };
+       if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+           tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
+       return tags;
+   }
+   ```
+
+4. **Instrument each method:**
+   - Add `var stopwatch = Stopwatch.StartNew();` at method start
+   - Record metrics before return: `_operationsCounter.Add(1, GetMetricTags("op", "success"));`
+   - Record duration: `_operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, GetMetricTags("op", "success"));`
+   - Record failures in catch blocks with result="error"
+
+#### 4.2.3: Provider Status
+
+**✅ COMPLETE:**
+- [x] ✅ **Caching.AWS** (ElastiCacheProvider) - 7/7 methods, 40/40 tests passing
+  - Metrics: operations counter, hits counter, misses counter, duration histogram
+  - Operations: get, set, remove, exists, get_many, set_many, refresh
+  
+**🔄 IN PROGRESS:**
+- [x] 🟡 **Messaging.AWS (SQS)** - 4/4 methods instrumented, needs testing
+  - Metrics: operations counter, messages sent, messages received, duration histogram
+  - Operations: publish, publish_batch, receive, delete
+  - Helper method: `GetMetricTags(operation, result, provider)` added
+  
+- [ ] 🟡 **Messaging.AWS (SNS)** - 0/3 methods instrumented (fields added, methods pending)
+  - Metrics fields: operations counter, messages sent, duration histogram (shared with SQS)
+  - Operations: publish, publish_batch, subscribe
+  - **TODO:** Add stopwatch + metrics recording to 3 methods, add GetMetricTags helper
+
+**⏳ PENDING:**
+- [ ] **FileStorage.AWS** (S3FileStorageProvider) - 0/7 methods
+  - Metrics: operations counter, files uploaded, upload size (bytes), duration histogram
+  - Operations: upload, download, delete, exists, get_presigned_url, get_metadata, list
+  
+- [ ] **Search.AWS** (OpenSearchProvider) - 0/4 methods
+  - Metrics: operations counter, queries executed, search latency histogram
+  - Operations: index, search, delete, bulk_index
+  
+- [ ] **Notifications.AWS** (AwsNotificationProvider) - 0/4 methods
+  - Metrics: operations counter, notifications sent, duration histogram
+  - Operations: send_email, send_templated_email, send_sms, send_push
+  
+- [ ] **Workflow.AWS** (StepFunctionsWorkflowProvider) - 0/4 methods
+  - Metrics: operations counter, executions started, duration histogram
+  - Operations: start_execution, get_execution_status, get_execution_output, stop_execution
+  
+- [ ] **AIAssistance.AWS** (BedrockAIAssistantProvider) - 0/3 methods
+  - Metrics: operations counter, tokens generated (estimate), model latency histogram
+  - Operations: generate_text, generate_embedding, generate_image
+  
+- [ ] **Reporting.AWS** (MetabaseReportingProvider) - 0/4 methods
+  - Metrics: operations counter, queries executed, query duration histogram
+  - Operations: execute_query, get_dashboard, create_dashboard, export_report
+
+#### 4.2.4: Testing & Verification
+- [x] ✅ Caching.AWS - 40/40 tests passing
+- [ ] Messaging.AWS - 50/50 tests (needs verification)
+- [ ] FileStorage.AWS - 37/37 tests (after implementation)
+- [ ] Search.AWS - 53/53 tests (after implementation)
+- [ ] Notifications.AWS - 45/45 tests (after implementation)
+- [ ] Workflow.AWS - 42/42 tests (after implementation)
+- [ ] AIAssistance.AWS - 60/60 tests (after implementation)
+- [ ] Reporting.AWS - 63/63 tests (after implementation)
+
+**Target:** All 390 tests passing after metrics implementation
+
+#### 4.2.5: Documentation & Completion
+- [ ] Create metrics guide: `.claude/guides/METRICS_PATTERN.md`
+- [ ] Update provider READMEs with metrics configuration examples
+- [ ] Update TASKS.md to mark Task 4.2 complete
+- [ ] Create PR for metrics integration
+
+**Estimated Remaining Time:** 2-3 hours (29 methods across 6.5 providers)
 
 **Note:** Logging ✅ and Tracing ✅ already complete (Task 4.1.3). This task adds Metrics (third pillar of observability).
 
