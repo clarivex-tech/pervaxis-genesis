@@ -2,9 +2,26 @@
 
 This guide explains how to configure secrets for the Pervaxis Genesis repository.
 
+## Important: Two Different Names!
+
+⚠️ **GitHub Restrictions:** GitHub reserves the `GITHUB_` prefix, so we use different names:
+
+| Location | Secret/Variable Name | Why |
+|----------|---------------------|-----|
+| **GitHub Repository Secret** | `GH_PACKAGES_PAT` | GitHub doesn't allow `GITHUB_` prefix |
+| **Local Environment Variable** | `GITHUB_PACKAGES_PAT` | Works fine locally, used by `nuget.config` |
+
+**Summary:** 
+- GitHub secret: `GH_PACKAGES_PAT` (for CI/CD)
+- Local env var: `GITHUB_PACKAGES_PAT` (for your machine)
+
+The workflows map `GH_PACKAGES_PAT` → `GITHUB_PACKAGES_PAT` so `nuget.config` works correctly.
+
+---
+
 ## Required Secrets
 
-### 1. `GITHUB_PACKAGES_PAT` (GitHub Personal Access Token)
+### 1. `GH_PACKAGES_PAT` (GitHub Personal Access Token)
 
 **Purpose:** Authenticate with GitHub Packages to restore NuGet packages from `clarivex-tech` organization.
 
@@ -16,7 +33,7 @@ This guide explains how to configure secrets for the Pervaxis Genesis repository
 #### For Repository (CI/CD):
 1. Go to repository **Settings** → **Secrets and variables** → **Actions**
 2. Click **New repository secret**
-3. Name: `GITHUB_PACKAGES_PAT`
+3. Name: `GH_PACKAGES_PAT` (Note: Cannot use `GITHUB_` prefix - reserved by GitHub)
 4. Value: Your GitHub Personal Access Token with `read:packages` scope
 5. Click **Add secret**
 
@@ -113,9 +130,10 @@ Check workflow runs at: https://github.com/clarivex-tech/pervaxis-genesis/action
 - Verify token has `read:packages` scope
 
 ### GitHub Actions workflow fails at restore:
-- Check `GITHUB_PACKAGES_PAT` secret is added to repository
+- Check `GH_PACKAGES_PAT` secret is added to repository (Settings → Secrets)
 - Verify token is valid and not expired
 - Check token permissions include `read:packages`
+- Note: GitHub secret is named `GH_PACKAGES_PAT`, local env var is `GITHUB_PACKAGES_PAT`
 
 ### Package not found:
 - Verify package exists at https://github.com/orgs/clarivex-tech/packages
