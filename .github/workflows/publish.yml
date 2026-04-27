@@ -148,6 +148,14 @@ jobs:
           retention-days: 90
 
       # ── Create GitHub Release (stable tags only) ──────────────────────────
+      - name: Delete existing release if present
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+        continue-on-error: true
+        run: |
+          gh release delete ${{ github.ref_name }} --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release
         if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
         uses: softprops/action-gh-release@v2
@@ -162,8 +170,10 @@ jobs:
             ### NuGet Packages
             Install from GitHub Packages:
             ```
-            dotnet add package Pervaxis.Genesis.Aws.CloudFormation --version ${{ steps.version.outputs.version }}
+            dotnet add package Pervaxis.Genesis.Caching.AWS --version ${{ steps.version.outputs.version }}
             ```
           files: ./artifacts/*.nupkg
           draft: false
           prerelease: false
+          make_latest: true
+          generate_release_notes: false
