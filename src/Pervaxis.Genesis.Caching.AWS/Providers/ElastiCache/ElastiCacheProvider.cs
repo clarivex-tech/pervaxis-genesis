@@ -568,10 +568,25 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
             parts.Add($"tenant:{_tenantContext.TenantId.Value}");
         }
 
-        // Add the actual key
-        parts.Add(key);
+        // Sanitize user-provided key to prevent key injection attacks
+        var sanitizedKey = SanitizeCacheKey(key);
+        parts.Add(sanitizedKey);
 
         return string.Join(":", parts);
+    }
+
+    /// <summary>
+    /// Sanitizes cache keys to prevent injection attacks by removing/replacing control characters.
+    /// Replaces colons (:) with underscores to prevent tenant isolation bypass.
+    /// </summary>
+    private static string SanitizeCacheKey(string key)
+    {
+        // Replace control characters that could interfere with key structure
+        return key
+            .Replace(":", "_", StringComparison.Ordinal)      // Prevent key structure manipulation
+            .Replace("\n", "", StringComparison.Ordinal)      // Remove newlines
+            .Replace("\r", "", StringComparison.Ordinal)      // Remove carriage returns
+            .Replace("\t", "_", StringComparison.Ordinal);    // Replace tabs with underscores
     }
 
     private string Serialize<T>(T value) => JsonSerializer.Serialize(value, _jsonOptions);

@@ -691,5 +691,117 @@ public class ElastiCacheProviderTests
                     It.IsAny<CommandFlags>()),
                 Times.Once);
         }
+
+        [Fact]
+        public async Task GetAsync_WithColonInKey_SanitizesKey()
+        {
+            // Arrange
+            var provider = new ElastiCacheProvider(
+                MsOptions.Create(_options),
+                _mockLogger.Object,
+                _mockMultiplexer.Object);
+
+            _mockDatabase
+                .Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync(RedisValue.Null);
+
+            // Act - attempt key injection with colons
+            var maliciousKey = "malicious:tenant:other-tenant:secret";
+            await provider.GetAsync<string>(maliciousKey);
+
+            // Assert - colons should be replaced with underscores
+            _mockDatabase.Verify(
+                d => d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "malicious_tenant_other-tenant_secret"),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task SetAsync_WithControlCharactersInKey_SanitizesKey()
+        {
+            // Arrange
+            var provider = new ElastiCacheProvider(
+                MsOptions.Create(_options),
+                _mockLogger.Object,
+                _mockMultiplexer.Object);
+
+            _mockDatabase
+                .Setup(d => d.StringSetAsync(
+                    It.IsAny<RedisKey>(),
+                    It.IsAny<RedisValue>(),
+                    It.IsAny<TimeSpan?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<When>(),
+                    It.IsAny<CommandFlags>()))
+                .ReturnsAsync(true);
+
+            // Act - attempt key injection with control characters
+            var maliciousKey = "key\nwith\rcontrol\tcharacters:inject";
+            await provider.SetAsync(maliciousKey, "value");
+
+            // Assert - control characters should be removed/replaced
+            _mockDatabase.Verify(
+                d => d.StringSetAsync(
+                    It.Is<RedisKey>(k =>
+                        k.ToString() == "keywithcontrol_characters_inject" &&
+                        !k.ToString().Contains('\n') &&
+                        !k.ToString().Contains('\r')),
+                    It.IsAny<RedisValue>(),
+                    It.IsAny<TimeSpan?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<When>(),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task SetAsync_WithTenantIsolationAndMaliciousKey_PreventsBypass()
+        {
+            // Arrange
+            var mockTenantContext = new Mock<ITenantContext>();
+            mockTenantContext.Setup(t => t.IsResolved).Returns(true);
+            mockTenantContext.Setup(t => t.TenantId).Returns(new TenantId("tenant-123"));
+
+            var options = new CachingOptions
+            {
+                ConnectionString = "localhost:6379",
+                EnableTenantIsolation = true
+            };
+
+            var provider = new ElastiCacheProvider(
+                MsOptions.Create(options),
+                _mockLogger.Object,
+                _mockMultiplexer.Object,
+                mockTenantContext.Object);
+
+            _mockDatabase
+                .Setup(d => d.StringSetAsync(
+                    It.IsAny<RedisKey>(),
+                    It.IsAny<RedisValue>(),
+                    It.IsAny<TimeSpan?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<When>(),
+                    It.IsAny<CommandFlags>()))
+                .ReturnsAsync(true);
+
+            // Act - attacker tries to bypass tenant isolation with crafted key
+            var attackKey = "../../tenant:other-tenant:sensitive-data";
+            await provider.SetAsync(attackKey, "malicious-value");
+
+            // Assert - key structure should have tenant prefix and sanitized key
+            // The final key should be: tenant:tenant-123:.._.._tenant_other-tenant_sensitive-data
+            _mockDatabase.Verify(
+                d => d.StringSetAsync(
+                    It.Is<RedisKey>(k =>
+                        k.ToString().StartsWith("tenant:tenant-123:") &&
+                        !k.ToString().Contains("tenant:other-tenant")),
+                    It.IsAny<RedisValue>(),
+                    It.IsAny<TimeSpan?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<When>(),
+                    It.IsAny<CommandFlags>()),
+                Times.Once);
+        }
     }
 }

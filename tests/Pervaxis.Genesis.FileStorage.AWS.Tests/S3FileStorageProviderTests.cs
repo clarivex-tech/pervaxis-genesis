@@ -790,4 +790,77 @@ public abstract class S3FileStorageProviderTests
         }
         return new MemoryStream(buffer);
     }
+
+    public class SecurityTests : S3FileStorageProviderTests
+    {
+        [Fact]
+        public async Task UploadAsync_WithPathTraversalInKey_ThrowsArgumentException()
+        {
+            // Arrange
+            var options = CreateValidOptions();
+            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var s3Client = Mock.Of<IAmazonS3>();
+            var provider = new S3FileStorageProvider(options, logger, s3Client);
+            using var stream = CreateTestStream(100);
+
+            // Act & Assert - path traversal should be rejected
+            var exception = await Assert.ThrowsAsync<ArgumentException>(
+                () => provider.UploadAsync("../../../sensitive-file.txt", stream));
+
+            exception.ParamName.Should().Be("key");
+            exception.Message.Should().Contain("path traversal");
+        }
+
+        [Fact]
+        public async Task UploadAsync_WithBackslashPathTraversal_ThrowsArgumentException()
+        {
+            // Arrange
+            var options = CreateValidOptions();
+            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var s3Client = Mock.Of<IAmazonS3>();
+            var provider = new S3FileStorageProvider(options, logger, s3Client);
+            using var stream = CreateTestStream(100);
+
+            // Act & Assert - backslash path traversal should also be rejected
+            var exception = await Assert.ThrowsAsync<ArgumentException>(
+                () => provider.UploadAsync("..\\..\\sensitive-file.txt", stream));
+
+            exception.ParamName.Should().Be("key");
+            exception.Message.Should().Contain("path traversal");
+        }
+
+        [Fact]
+        public async Task DownloadAsync_WithPathTraversalInKey_ThrowsArgumentException()
+        {
+            // Arrange
+            var options = CreateValidOptions();
+            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var s3Client = Mock.Of<IAmazonS3>();
+            var provider = new S3FileStorageProvider(options, logger, s3Client);
+
+            // Act & Assert
+            var exception = await Assert.ThrowsAsync<ArgumentException>(
+                () => provider.DownloadAsync("../../other-tenant/file.txt"));
+
+            exception.ParamName.Should().Be("key");
+            exception.Message.Should().Contain("path traversal");
+        }
+
+        [Fact]
+        public async Task DeleteAsync_WithPathTraversalInKey_ThrowsArgumentException()
+        {
+            // Arrange
+            var options = CreateValidOptions();
+            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var s3Client = Mock.Of<IAmazonS3>();
+            var provider = new S3FileStorageProvider(options, logger, s3Client);
+
+            // Act & Assert
+            var exception = await Assert.ThrowsAsync<ArgumentException>(
+                () => provider.DeleteAsync("../sensitive.txt"));
+
+            exception.ParamName.Should().Be("key");
+            exception.Message.Should().Contain("path traversal");
+        }
+    }
 }

@@ -28,7 +28,7 @@ on:
         default: ''
 
 permissions:
-  contents: read
+  contents: write   # required to create GitHub releases
   packages: write   # required to push to GitHub Packages
 
 env:
@@ -148,6 +148,23 @@ jobs:
           retention-days: 90
 
       # ── Create GitHub Release (stable tags only) ──────────────────────────
+      - name: Delete existing release if present
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+        continue-on-error: true
+        run: |
+          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" \
+            | jq -r '.id // empty')
+
+          if [[ -n "$RELEASE_ID" ]]; then
+            echo "Found existing release with ID: $RELEASE_ID. Deleting..."
+            curl -X DELETE -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+            echo "Release deleted successfully"
+          else
+            echo "No existing release found for tag ${{ github.ref_name }}"
+          fi
+
       - name: Create GitHub Release
         if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
         uses: softprops/action-gh-release@v2
@@ -162,8 +179,10 @@ jobs:
             ### NuGet Packages
             Install from GitHub Packages:
             ```
-            dotnet add package Pervaxis.Genesis.Aws.CloudFormation --version ${{ steps.version.outputs.version }}
+            dotnet add package Pervaxis.Genesis.Caching.AWS --version ${{ steps.version.outputs.version }}
             ```
           files: ./artifacts/*.nupkg
-          draft: false
+          draft: true
           prerelease: false
+          make_latest: true
+          generate_release_notes: false
