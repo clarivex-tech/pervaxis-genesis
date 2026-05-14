@@ -6,7 +6,8 @@
 #   - Push of a version tag v*.*.* (stable release publish)
 #
 # Publish targets:
-#   - GitHub Packages (always) — internal feed for platform consumers
+#   - GitHub Packages (always)      — internal feed for platform consumers
+#   - NuGet.org (stable tags only)  — public feed, no pre-release packages
 #
 # Semantic versioning is driven by Directory.Build.props <Version>.
 # This workflow does NOT bump versions — that is a manual step via PR to
@@ -35,7 +36,6 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_NOLOGO: true
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
-  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
   GITHUB_PACKAGES_PAT: ${{ secrets.GH_PACKAGES_PAT }}
 
 jobs:
@@ -139,6 +139,23 @@ jobs:
             --source "https://nuget.pkg.github.com/clarivex-tech/index.json" \
             --skip-duplicate
 
+      # ── Publish to NuGet.org (stable tags only) ───────────────────────────
+      - name: Publish .nupkg to NuGet.org
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+        run: |
+          dotnet nuget push "./artifacts/*.nupkg" \
+            --api-key ${{ secrets.NUGETORG_API_KEY }} \
+            --source "https://api.nuget.org/v3/index.json" \
+            --skip-duplicate
+
+      - name: Publish .snupkg symbol packages to NuGet.org
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+        run: |
+          dotnet nuget push "./artifacts/*.snupkg" \
+            --api-key ${{ secrets.NUGETORG_API_KEY }} \
+            --source "https://api.nuget.org/v3/index.json" \
+            --skip-duplicate
+
       # ── Upload artifacts ──────────────────────────────────────────────────
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v5
@@ -177,9 +194,14 @@ jobs:
             See [CHANGELOG.md](https://github.com/clarivex-tech/pervaxis-genesis/blob/main/CHANGELOG.md) for release notes.
 
             ### NuGet Packages
-            Install from GitHub Packages:
+            Install from NuGet.org:
             ```
             dotnet add package Pervaxis.Genesis.Caching.AWS --version ${{ steps.version.outputs.version }}
+            ```
+
+            Install from GitHub Packages (internal):
+            ```
+            dotnet add package Pervaxis.Genesis.Caching.AWS --version ${{ steps.version.outputs.version }} --source "https://nuget.pkg.github.com/clarivex-tech/index.json"
             ```
           files: ./artifacts/*.nupkg
           draft: true
