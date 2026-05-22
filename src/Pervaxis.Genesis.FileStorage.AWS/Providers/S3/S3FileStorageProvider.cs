@@ -207,6 +207,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to upload file: {key}", ex);
         }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -279,6 +292,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to download file: {key}", ex);
         }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -329,6 +355,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to delete file: {key}", ex);
+        }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
         }
     }
 
@@ -391,6 +430,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to check file existence: {key}", ex);
+        }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
         }
     }
 
@@ -455,6 +507,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to generate presigned URL: {key}", ex);
         }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -517,6 +582,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to get metadata: {key}", ex);
+        }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
         }
     }
 
@@ -592,6 +670,19 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
             throw new GenesisException(nameof(S3FileStorageProvider), $"Failed to list files with prefix: {prefix}", ex);
+        }
+        catch (GenesisException gex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+            activity?.SetTag("exception.id", gex.ExceptionId);
+            activity?.SetTag("exception.provider", gex.ProviderName);
+            if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+            {
+                activity?.SetTag("exception.error_code", gex.ErrorCode);
+            }
+
+            _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+            throw;
         }
     }
 
