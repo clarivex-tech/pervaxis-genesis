@@ -187,6 +187,20 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish message to SQS queue {QueueUrl}", queueUrl);
 
@@ -279,6 +293,20 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to publish batch to SQS queue {QueueUrl}", queueUrl);
 
@@ -344,6 +372,20 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to receive messages from SQS queue {QueueUrl}", queueUrl);
 
@@ -398,6 +440,20 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete message from SQS queue {QueueUrl}", queueUrl);
 

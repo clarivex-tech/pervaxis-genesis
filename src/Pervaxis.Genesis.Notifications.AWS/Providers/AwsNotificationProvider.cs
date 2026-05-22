@@ -199,6 +199,20 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send email to {To}", recipient);
 
@@ -268,6 +282,20 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send templated email to {To} using template {TemplateId}", recipient, templateId);
 
@@ -336,6 +364,20 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send SMS to {PhoneNumber}", phoneNumber);
 
@@ -416,6 +458,20 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to send push notification to device token {DeviceToken}", deviceToken);
 
