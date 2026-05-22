@@ -174,6 +174,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get cached value for key: {Key}", fullKey);
 
@@ -230,6 +244,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to cache value for key: {Key}", fullKey);
 
@@ -276,6 +304,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to remove cached value for key: {Key}", fullKey);
 
@@ -317,6 +359,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to check existence for key: {Key}", fullKey);
 
@@ -375,6 +431,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to get multiple cached values");
 
@@ -445,6 +515,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to cache multiple values");
 
@@ -498,6 +582,20 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to refresh expiry for key: {Key}", fullKey);
 

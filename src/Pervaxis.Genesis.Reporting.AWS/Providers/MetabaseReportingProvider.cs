@@ -204,8 +204,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
             return mappedResults;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to execute query");
 
@@ -258,8 +272,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
             return dashboard ?? new object();
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
 
             var tags = GetMetricTags("get_dashboard", "error");
@@ -324,8 +352,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
             return dashboardId;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to create dashboard '{Name}'", name);
 
@@ -391,8 +433,22 @@ public sealed class MetabaseReportingProvider : IReporting, IDisposable
 
             return data;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to export report {ReportId} as {Format}", reportId, format);
 

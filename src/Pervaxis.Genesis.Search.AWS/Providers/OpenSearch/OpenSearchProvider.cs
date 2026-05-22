@@ -196,8 +196,22 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             return true;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to index document {Id} to index {Index}", id, index);
 
@@ -270,8 +284,22 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             return results;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to search index {Index}", index);
 
@@ -339,8 +367,22 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             return wasDeleted;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to delete document {Id} from index {Index}", id, index);
 
@@ -432,8 +474,22 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
             return successCount;
         }
-        catch (Exception ex) when (ex is not GenesisException)
+        catch (Exception ex)
         {
+            if (ex is GenesisException gex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
+                activity?.SetTag("exception.id", gex.ExceptionId);
+                activity?.SetTag("exception.provider", gex.ProviderName);
+                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
+                {
+                    activity?.SetTag("exception.error_code", gex.ErrorCode);
+                }
+
+                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Failed to bulk index documents to index {Index}", index);
 
