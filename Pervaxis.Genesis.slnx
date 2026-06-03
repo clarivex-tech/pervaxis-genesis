@@ -9,6 +9,7 @@
     <Project Path="src/Pervaxis.Genesis.Idempotency.AWS/Pervaxis.Genesis.Idempotency.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Messaging.AWS/Pervaxis.Genesis.Messaging.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Notifications.AWS/Pervaxis.Genesis.Notifications.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.OData/Pervaxis.Genesis.OData.csproj" />
     <Project Path="src/Pervaxis.Genesis.Reporting.AWS/Pervaxis.Genesis.Reporting.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Search.AWS/Pervaxis.Genesis.Search.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Workflow.AWS/Pervaxis.Genesis.Workflow.AWS.csproj" />
@@ -23,6 +24,7 @@
     <Project Path="tests/Pervaxis.Genesis.Idempotency.AWS.Tests/Pervaxis.Genesis.Idempotency.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Messaging.AWS.Tests/Pervaxis.Genesis.Messaging.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Notifications.AWS.Tests/Pervaxis.Genesis.Notifications.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.OData.Tests/Pervaxis.Genesis.OData.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Reporting.AWS.Tests/Pervaxis.Genesis.Reporting.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Search.AWS.Tests/Pervaxis.Genesis.Search.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Workflow.AWS.Tests/Pervaxis.Genesis.Workflow.AWS.Tests.csproj" />
