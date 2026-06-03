@@ -3,6 +3,7 @@
     <Project Path="src/Pervaxis.Genesis.AIAssistance.AWS/Pervaxis.Genesis.AIAssistance.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Base/Pervaxis.Genesis.Base.csproj" />
     <Project Path="src/Pervaxis.Genesis.Caching.AWS/Pervaxis.Genesis.Caching.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.FeatureFlags.AWS/Pervaxis.Genesis.FeatureFlags.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.FileStorage.AWS/Pervaxis.Genesis.FileStorage.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Idempotency/Pervaxis.Genesis.Idempotency.csproj" />
     <Project Path="src/Pervaxis.Genesis.Idempotency.AWS/Pervaxis.Genesis.Idempotency.AWS.csproj" />
@@ -16,6 +17,7 @@
     <Project Path="tests/Pervaxis.Genesis.AIAssistance.AWS.Tests/Pervaxis.Genesis.AIAssistance.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Base.Tests/Pervaxis.Genesis.Base.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Caching.AWS.Tests/Pervaxis.Genesis.Caching.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.FeatureFlags.AWS.Tests/Pervaxis.Genesis.FeatureFlags.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.FileStorage.AWS.Tests/Pervaxis.Genesis.FileStorage.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Idempotency.Tests/Pervaxis.Genesis.Idempotency.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Idempotency.AWS.Tests/Pervaxis.Genesis.Idempotency.AWS.Tests.csproj" />
