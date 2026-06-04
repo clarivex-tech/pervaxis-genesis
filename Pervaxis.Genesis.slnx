@@ -12,6 +12,7 @@
     <Project Path="src/Pervaxis.Genesis.OData/Pervaxis.Genesis.OData.csproj" />
     <Project Path="src/Pervaxis.Genesis.Reporting.AWS/Pervaxis.Genesis.Reporting.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Search.AWS/Pervaxis.Genesis.Search.AWS.csproj" />
+    <Project Path="src/Pervaxis.Genesis.TransactionalLogging.AWS/Pervaxis.Genesis.TransactionalLogging.AWS.csproj" />
     <Project Path="src/Pervaxis.Genesis.Workflow.AWS/Pervaxis.Genesis.Workflow.AWS.csproj" />
   </Folder>
   <Folder Name="/tests/">
@@ -27,6 +28,7 @@
     <Project Path="tests/Pervaxis.Genesis.OData.Tests/Pervaxis.Genesis.OData.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Reporting.AWS.Tests/Pervaxis.Genesis.Reporting.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Search.AWS.Tests/Pervaxis.Genesis.Search.AWS.Tests.csproj" />
+    <Project Path="tests/Pervaxis.Genesis.TransactionalLogging.AWS.Tests/Pervaxis.Genesis.TransactionalLogging.AWS.Tests.csproj" />
     <Project Path="tests/Pervaxis.Genesis.Workflow.AWS.Tests/Pervaxis.Genesis.Workflow.AWS.Tests.csproj" />
   </Folder>
 </Solution>
