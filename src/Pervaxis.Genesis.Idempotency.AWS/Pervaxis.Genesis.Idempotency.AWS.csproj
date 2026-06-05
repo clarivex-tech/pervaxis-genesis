@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AWS SDK for DynamoDB -->
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="3.7.400.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pervaxis.Genesis.Idempotency\Pervaxis.Genesis.Idempotency.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pervaxis.Genesis.Idempotency.AWS.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);NU1901;NU1902</NoWarn>
+    <AnalysisMode>Default</AnalysisMode>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AWS SDK for DynamoDB (hot store) and S3 (cold store / overflow) -->
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="3.7.400.7" />
+    <PackageReference Include="AWSSDK.S3" Version="3.7.401" />
+
+    <!-- Scrutor for TryDecorate pattern -->
+    <PackageReference Include="Scrutor" Version="5.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core for middleware and HTTP abstractions -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Genesis Base (transitively provides Pervaxis.Core.Abstractions, Observability, Resilience) -->
+    <ProjectReference Include="..\Pervaxis.Genesis.Base\Pervaxis.Genesis.Base.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pervaxis.Genesis.TransactionalLogging.AWS.Tests" />
+  </ItemGroup>
+
+</Project>
