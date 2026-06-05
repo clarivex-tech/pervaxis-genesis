@@ -12,9 +12,9 @@ This guide explains how to configure secrets for the Pervaxis Genesis repository
 | **Local Environment Variable** | `GITHUB_PACKAGES_PAT` | Works fine locally, used by `nuget.config` |
 
 **Summary:** 
-- GitHub Actions uses the built-in `github.token` for GitHub Packages restore and publish permissions.
+- GitHub Actions uses `GH_PACKAGES_PAT` for GitHub Packages restore and publish access.
 - Local env var: `GITHUB_PACKAGES_PAT` (for your machine)
-- Optional GitHub secret: `GH_PACKAGES_PAT` if you need a PAT for external tooling or manual package access.
+- The PAT must be valid and have access to the `clarivex-tech` GitHub Packages feed.
 
 ---
 
@@ -130,9 +130,9 @@ GitHub Actions restore/publish should use the workflow `github.token`, so packag
 - Verify token has `read:packages` scope
 
 ### GitHub Actions workflow fails at restore:
-- Check the workflow has `packages: read` permission
-- Verify the repository/package is accessible to the workflow token
-- If you are using a custom workflow or external runner, confirm it provides a valid token
+- Check `GH_PACKAGES_PAT` is configured and not expired
+- Verify the token has `read:packages` scope
+- Verify the token owner can read the `clarivex-tech` GitHub Packages feed
 
 ### Package not found:
 - Verify package exists at https://github.com/orgs/clarivex-tech/packages
