@@ -41,14 +41,14 @@ public static class IdempotencyAwsServiceCollectionExtensions
     /// <param name="services">The service collection.</param>
     /// <param name="configuration">The configuration instance.</param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddGenesisIdempotencyAws(
+    public static IServiceCollection AddGenesisIdempotency(
         this IServiceCollection services,
         IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        services.AddGenesisIdempotency(configuration);
+        services.AddGenesisIdempotencyCore(configuration);
         RegisterAwsServices(services);
         return services;
     }
@@ -59,14 +59,14 @@ public static class IdempotencyAwsServiceCollectionExtensions
     /// <param name="services">The service collection.</param>
     /// <param name="configureOptions">The options configuration action.</param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddGenesisIdempotencyAws(
+    public static IServiceCollection AddGenesisIdempotency(
         this IServiceCollection services,
         Action<IdempotencyOptions> configureOptions)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configureOptions);
 
-        services.AddGenesisIdempotency(configureOptions);
+        services.AddGenesisIdempotencyCore(configureOptions);
         RegisterAwsServices(services);
         return services;
     }

@@ -31,13 +31,13 @@ namespace Pervaxis.Genesis.Idempotency.Extensions;
 public static class IdempotencyServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds Genesis Idempotency services using configuration binding.
+    /// Adds Genesis Idempotency core services using configuration binding.
     /// Binds options from the "Genesis:Idempotency" section.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configuration">The configuration instance.</param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddGenesisIdempotency(
+    internal static IServiceCollection AddGenesisIdempotencyCore(
         this IServiceCollection services,
         IConfiguration configuration)
     {
@@ -52,12 +52,12 @@ public static class IdempotencyServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds Genesis Idempotency services using action-based configuration.
+    /// Adds Genesis Idempotency core services using action-based configuration.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configureOptions">The options configuration action.</param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddGenesisIdempotency(
+    internal static IServiceCollection AddGenesisIdempotencyCore(
         this IServiceCollection services,
         Action<IdempotencyOptions> configureOptions)
     {

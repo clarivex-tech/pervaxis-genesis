@@ -21,7 +21,7 @@ public sealed class ServiceCollectionExtensionsTests
         IServiceCollection services = null!;
         var config = new ConfigurationBuilder().Build();
 
-        var act = () => services.AddGenesisIdempotency(config);
+        var act = () => services.AddGenesisIdempotencyCore(config);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("services");
@@ -33,7 +33,7 @@ public sealed class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         IConfiguration config = null!;
 
-        var act = () => services.AddGenesisIdempotency(config);
+        var act = () => services.AddGenesisIdempotencyCore(config);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("configuration");
@@ -45,7 +45,7 @@ public sealed class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         Action<IdempotencyOptions> configAction = null!;
 
-        var act = () => services.AddGenesisIdempotency(configAction);
+        var act = () => services.AddGenesisIdempotencyCore(configAction);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("configureOptions");
@@ -63,7 +63,7 @@ public sealed class ServiceCollectionExtensionsTests
             })
             .Build();
 
-        services.AddGenesisIdempotency(config);
+        services.AddGenesisIdempotencyCore(config);
 
         var provider = services.BuildServiceProvider();
         var validator = provider.GetService<IIdempotencyKeyValidator>();
@@ -78,7 +78,7 @@ public sealed class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         var config = new ConfigurationBuilder().Build();
 
-        services.AddGenesisIdempotency(config);
+        services.AddGenesisIdempotencyCore(config);
 
         var provider = services.BuildServiceProvider();
         var computer = provider.GetService<IRequestFingerprintComputer>();
@@ -92,7 +92,7 @@ public sealed class ServiceCollectionExtensionsTests
     {
         var services = new ServiceCollection();
 
-        services.AddGenesisIdempotency(opts =>
+        services.AddGenesisIdempotencyCore(opts =>
         {
             opts.TableName = "custom-table";
             opts.TtlMinutes = 120;
@@ -110,8 +110,8 @@ public sealed class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         var config = new ConfigurationBuilder().Build();
 
-        services.AddGenesisIdempotency(config);
-        services.AddGenesisIdempotency(config);
+        services.AddGenesisIdempotencyCore(config);
+        services.AddGenesisIdempotencyCore(config);
 
         var validatorRegistrations = services
             .Where(s => s.ServiceType == typeof(IIdempotencyKeyValidator))
