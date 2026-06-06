@@ -5,15 +5,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);NU1901;NU1902</NoWarn>
     <AnalysisMode>Default</AnalysisMode>
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- AWS SDK for DynamoDB (hot store) and S3 (cold store / overflow) -->
-    <PackageReference Include="AWSSDK.DynamoDBv2" Version="3.7.400.7" />
-    <PackageReference Include="AWSSDK.S3" Version="3.7.401" />
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.0" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.0" />
 
     <!-- Scrutor for TryDecorate pattern -->
     <PackageReference Include="Scrutor" Version="5.0.1" />
