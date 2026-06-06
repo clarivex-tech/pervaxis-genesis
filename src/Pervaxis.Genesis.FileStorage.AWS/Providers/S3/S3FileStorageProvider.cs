@@ -645,7 +645,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
                 request.ContinuationToken = response.NextContinuationToken;
             }
-            while (response.IsTruncated);
+            while (response.IsTruncated == true);
 
             activity?.SetTag("storage.object_count", keys.Count);
             _logger.LogInformation(

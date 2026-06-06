@@ -8,7 +8,7 @@
 
   <ItemGroup>
     <!-- AWS SDK for ElastiCache (configuration discovery only, not required for Redis operations) -->
-    <PackageReference Include="AWSSDK.ElastiCache" Version="3.7.401" />
+    <PackageReference Include="AWSSDK.ElastiCache" Version="4.0.0" />
 
     <!-- Redis client for cache operations -->
     <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
