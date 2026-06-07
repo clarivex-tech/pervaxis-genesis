@@ -22,9 +22,6 @@ AWS DynamoDB idempotency store for the Pervaxis Genesis platform.
 ```csharp
 builder.Services.AddGenesisIdempotency(
     builder.Configuration.GetSection("Idempotency"));
-
-builder.Services.AddGenesisIdempotencyAws(
-    builder.Configuration.GetSection("Idempotency:Aws"));
 ```
 
 ## Key Features
