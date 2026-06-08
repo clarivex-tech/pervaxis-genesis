@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-06-08
+
+### ✨ New Module: Input Sanitization (`Pervaxis.Genesis.Sanitization`)
+
+Server-side input sanitization to prevent stored/reflected XSS at the service layer.
+
+**Core Features:**
+- `ISanitizer` interface with `StripAll`, `SanitizeHtml`, and profile-based `Sanitize` methods
+- Three built-in profiles: PlainText (strip all HTML), SafeHtml (allow safe formatting), Markdown (allow rendered Markdown HTML)
+- Custom profile support via configuration (`AllowCustomProfiles`)
+- `[Sanitize]` attribute for declarative model binding sanitization (runs before validation)
+- FluentValidation extensions: `.Sanitized()` (transform) and `.MustBeSanitized()` (reject)
+- Global sanitization middleware (opt-in, off by default) for POST/PUT/PATCH JSON bodies
+
+**Observability:**
+- `genesis.sanitization.operations` counter (tagged: profile, source)
+- `genesis.sanitization.threats_detected` counter (tagged: profile, source)
+- `genesis.sanitization.duration_ms` histogram (tagged: profile)
+- Source-generated structured logging (Warning on threat detection, Debug on clean input)
+
+**Security:**
+- Uses HtmlSanitizer (Ganss.Xss) — whitelist-based, battle-tested
+- Handles OWASP XSS bypass vectors: nested encoding, case variation, null byte injection, SVG/MathML, CSS expression attacks, data URIs, event handler attributes
+- 42 security-focused test cases covering known evasion techniques
+
+**Integration:**
+- Standard Genesis DI registration: `AddGenesisSanitization(configuration)` / `AddGenesisSanitization(options => {})`
+- Middleware registration: `UseGenesisSanitization()`
+- Configuration section: `Genesis:Sanitization`
+- Follows all Genesis patterns: `GenesisOptionsBase`, `PervaxisMeter`, source-generated `LoggerMessage`
+
+### 🧪 Testing
+
+- 96 new unit tests (all passing)
+- Full solution: 0 warnings, 0 errors
+
+---
+
 ## [1.0.1] - 2026-04-27
 
 ### 🔒 Security Fixes
