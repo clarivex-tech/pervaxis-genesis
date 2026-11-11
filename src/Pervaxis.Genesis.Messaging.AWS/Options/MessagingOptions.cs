@@ -17,6 +17,7 @@
  */
 
 using Pervaxis.Core.Abstractions.Genesis;
+using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Options;
@@ -46,10 +47,32 @@ public sealed class MessagingOptions : GenesisOptionsBase
     public bool EnableTenantIsolation { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets the time-to-live (TTL) for cached queue URLs and topic ARNs.
+    /// Prevents unbounded cache growth and handles queue/topic deletions.
+    /// Default is 1 hour. Set to TimeSpan.Zero to disable caching.
+    /// </summary>
+    public TimeSpan CacheTtl { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Gets or sets the maximum number of entries in the URL/ARN cache.
+    /// When exceeded, least recently used entries are evicted.
+    /// Default is 10,000 entries. Set to 0 for unlimited (not recommended).
+    /// </summary>
+    public int MaxCacheSize { get; set; } = 10_000;
+
+    /// <summary>
     /// Gets or sets the resilience policy configuration.
     /// Configures retry, circuit breaker, and timeout strategies for handling transient failures.
     /// </summary>
     public ResilienceOptions Resilience { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets a value indicating whether per-tenant AWS resources are used (separate queues/topics per tenant).
+    /// Phase 1: NOT YET IMPLEMENTED. Setting this to true will throw a configuration exception.
+    /// Phase 2+: When implemented, this will switch from shared queues to dedicated per-tenant resources.
+    /// Default is false (shared queues with message-attribute based isolation).
+    /// </summary>
+    public bool EnablePerTenantResources { get; set; }
 
     /// <inheritdoc/>
     public override bool Validate()
@@ -62,6 +85,15 @@ public sealed class MessagingOptions : GenesisOptionsBase
         if (!Resilience.Validate())
         {
             return false;
+        }
+
+        // Phase 1: Per-tenant resources not yet implemented
+        if (EnablePerTenantResources)
+        {
+            throw new GenesisConfigurationException(
+                nameof(MessagingOptions),
+                "Per-tenant AWS resources (EnablePerTenantResources=true) are not yet implemented. " +
+                "Phase 1 only supports shared queues with message-attribute based tenant isolation.");
         }
 
         return true;

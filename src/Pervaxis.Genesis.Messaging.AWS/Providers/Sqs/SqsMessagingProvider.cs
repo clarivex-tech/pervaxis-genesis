@@ -16,6 +16,7 @@
  ************************************************************************
  */
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
@@ -32,6 +33,7 @@ using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
+using Pervaxis.Genesis.Messaging.AWS.Caching;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
@@ -55,6 +57,11 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     private readonly Lazy<IAmazonSQS> _sqsClient;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
+    private readonly TimeProvider _timeProvider;
+
+    // URL cache: thread-safe, keyed by (destination, tenant, scope)
+    // Entries expire after configured TTL to prevent unbounded growth
+    private readonly ConcurrentDictionary<MessagingResourceCacheKey, MessagingResourceCacheEntry> _urlCache = new();
 
     // Metrics
     private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
@@ -77,16 +84,35 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         "ms",
         "Duration of messaging operations in milliseconds");
 
+    private static readonly Counter<long> _cacheHits = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.cache.hits",
+        "1",
+        "Number of cache hits for URL resolution");
+
+    private static readonly Counter<long> _cacheMisses = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.cache.misses",
+        "1",
+        "Number of cache misses for URL resolution");
+
+    private static readonly Counter<long> _cacheInvalidations = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.cache.invalidations",
+        "1",
+        "Number of cache invalidations due to not-found errors");
+
     /// <summary>
     /// Initializes a new instance of <see cref="SqsMessagingProvider"/> for production use.
     /// </summary>
     /// <param name="options">Messaging configuration options.</param>
     /// <param name="logger">Logger instance.</param>
     /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
+    /// <param name="environment">Optional environment name for validation (defaults to Production).</param>
+    /// <param name="timeProvider">Optional time provider for testing (defaults to system time).</param>
     public SqsMessagingProvider(
         IOptions<MessagingOptions> options,
         ILogger<SqsMessagingProvider> logger,
-        ITenantContext? tenantContext = null)
+        ITenantContext? tenantContext = null,
+        string? environment = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -94,8 +120,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions();
+        ValidateOptions(environment);
 
         _sqsClient = new Lazy<IAmazonSQS>(CreateClient);
         _jsonOptions = BuildJsonOptions();
@@ -119,7 +146,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         IOptions<MessagingOptions> options,
         ILogger<SqsMessagingProvider> logger,
         IAmazonSQS sqsClient,
-        ITenantContext? tenantContext = null)
+        ITenantContext? tenantContext = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -128,8 +156,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions();
+        ValidateOptions("Test"); // Internal constructor always allows disabled isolation
 
         _sqsClient = new Lazy<IAmazonSQS>(() => sqsClient);
         _jsonOptions = BuildJsonOptions();
@@ -163,7 +192,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             var request = new SendMessageRequest
             {
                 QueueUrl = queueUrl,
-                MessageBody = body
+                MessageBody = body,
+                MessageAttributes = new Dictionary<string, MessageAttributeValue>()
             };
 
             AddTenantAttributes(request.MessageAttributes);
@@ -185,31 +215,48 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             return response.MessageId;
         }
+        catch (QueueDoesNotExistException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SQS queue {QueueUrl} does not exist. Resource must be provisioned.", queueUrl);
+
+            // Invalidate cache on not-found error
+            InvalidateQueueCache(destination, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("publish", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                $"Queue '{queueUrl}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "QUEUE_NOT_FOUND",
+                new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
+        }
+        catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            // Pass through access denied and throttling unchanged for IAM policy detection
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to publish message to SQS queue {QueueUrl}", queueUrl);
+            _logger.LogError(ex, "SQS publish operation failed");
 
-            // Record failure metric
-            var tags = GetMetricTags("publish", "error", "sqs");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("publish", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SqsMessagingProvider), "SQS publish operation failed", ex);
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                "SQS publish operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -249,7 +296,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                         var entry = new SendMessageBatchRequestEntry
                         {
                             Id = idx.ToString(CultureInfo.InvariantCulture),
-                            MessageBody = Serialize(msg)
+                            MessageBody = Serialize(msg),
+                            MessageAttributes = new Dictionary<string, MessageAttributeValue>()
                         };
                         AddTenantAttributes(entry.MessageAttributes);
                         return entry;
@@ -291,31 +339,48 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             return allMessageIds;
         }
+        catch (QueueDoesNotExistException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SQS queue {QueueUrl} does not exist. Resource must be provisioned.", queueUrl);
+
+            // Invalidate cache on not-found error
+            InvalidateQueueCache(destination, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("publish_batch", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                $"Queue '{queueUrl}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "QUEUE_NOT_FOUND",
+                new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
+        }
+        catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            // Pass through access denied and throttling unchanged for IAM policy detection
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to publish batch to SQS queue {QueueUrl}", queueUrl);
+            _logger.LogError(ex, "SQS batch publish operation failed");
 
-            // Record failure metric
-            var tags = GetMetricTags("publish_batch", "error", "sqs");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("publish_batch", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SqsMessagingProvider), "SQS batch publish operation failed", ex);
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                "SQS batch publish operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -370,31 +435,47 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             return result;
         }
+        catch (QueueDoesNotExistException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SQS queue {QueueUrl} does not exist. Resource must be provisioned.", queueUrl);
+
+            // Invalidate cache on not-found error
+            InvalidateQueueCache(queue, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("receive", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                $"Queue '{queueUrl}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "QUEUE_NOT_FOUND",
+                new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
+        }
+        catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to receive messages from SQS queue {QueueUrl}", queueUrl);
+            _logger.LogError(ex, "SQS receive operation failed");
 
-            // Record failure metric
-            var tags = GetMetricTags("receive", "error", "sqs");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("receive", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SqsMessagingProvider), "SQS receive operation failed", ex);
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                "SQS receive operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -438,31 +519,47 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             return true;
         }
+        catch (QueueDoesNotExistException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SQS queue {QueueUrl} does not exist. Resource must be provisioned.", queueUrl);
+
+            // Invalidate cache on not-found error
+            InvalidateQueueCache(queue, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("delete", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                $"Queue '{queueUrl}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "QUEUE_NOT_FOUND",
+                new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
+        }
+        catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to delete message from SQS queue {QueueUrl}", queueUrl);
+            _logger.LogError(ex, "SQS delete operation failed");
 
-            // Record failure metric
-            var tags = GetMetricTags("delete", "error", "sqs");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("delete", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SqsMessagingProvider), "SQS delete operation failed", ex);
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                "SQS delete operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -491,13 +588,33 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
     }
 
-    private void ValidateOptions()
+    private void ValidateOptions(string? environment = null)
     {
         if (!_options.Validate())
         {
             throw new GenesisConfigurationException(
                 nameof(SqsMessagingProvider),
                 "Invalid messaging configuration");
+        }
+
+        // SECURITY: Tenant isolation can ONLY be disabled in Development and Test environments (allow-list)
+        if (!_options.EnableTenantIsolation)
+        {
+            var env = environment ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? string.Empty;
+            
+            // Allow-list: only Development and Test can disable isolation
+            var isAllowed = env.Equals("Development", StringComparison.OrdinalIgnoreCase) ||
+                           env.Equals("Test", StringComparison.OrdinalIgnoreCase);
+            
+            if (!isAllowed)
+            {
+                // Fail closed: missing env or any non-allowed environment is rejected
+                var envDisplay = string.IsNullOrEmpty(env) ? "(not set)" : env;
+                throw new GenesisConfigurationException(
+                    nameof(SqsMessagingProvider),
+                    $"Tenant isolation cannot be disabled in environment '{envDisplay}'. " +
+                    "EnableTenantIsolation=false is ONLY allowed in 'Development' or 'Test' environments.");
+            }
         }
     }
 
@@ -519,14 +636,206 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
     private string ResolveQueueUrl(string destination)
     {
+        return ResolveQueueUrl(destination, MessageScope.Tenant);
+    }
+
+    /// <summary>
+    /// Resolves queue URL with tenant isolation support and caching.
+    /// SECURITY: Never trusts external tenant ID - always resolves from ITenantContext.
+    /// Cache key includes (destination, tenantId, scope) to prevent cross-tenant leakage.
+    /// Tenant IDs are normalized to lowercase to prevent duplicate entries.
+    /// </summary>
+    private string ResolveQueueUrl(string destination, MessageScope scope)
+    {
+        // Caching disabled if TTL is zero
+        if (_options.CacheTtl == TimeSpan.Zero)
+        {
+            return ResolveQueueUrlInternal(destination, scope);
+        }
+
+        // Build cache key: (destination, tenant, scope) with normalized tenant ID
+        var tenantId = scope == MessageScope.Tenant && _tenantContext?.IsResolved == true
+            ? _tenantContext.TenantId.Value
+            : string.Empty;
+        
+        var cacheKey = new MessagingResourceCacheKey(destination, tenantId, scope);
+
+        // Try cache first - check if entry exists and is not expired
+        if (_urlCache.TryGetValue(cacheKey, out var cachedEntry))
+        {
+            if (!cachedEntry.IsExpired())
+            {
+                cachedEntry.Touch(); // Update last accessed time for LRU
+                _cacheHits.Add(1, new TagList { { "resource_type", "queue" } });
+                _logger.LogDebug("Cache hit for queue URL: {Destination} (tenant: {TenantId}, scope: {Scope})",
+                    destination, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope);
+                return cachedEntry.Value;
+            }
+
+            // Entry expired - remove it
+            _urlCache.TryRemove(cacheKey, out _);
+            _logger.LogDebug("Expired cache entry removed for queue: {Destination} (tenant: {TenantId}, scope: {Scope})",
+                destination, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope);
+        }
+
+        _cacheMisses.Add(1, new TagList { { "resource_type", "queue" } });
+
+        // Cache miss or expired - resolve the URL
+        var resolvedUrl = ResolveQueueUrlInternal(destination, scope);
+
+        // Cache the resolved URL with TTL
+        var entry = new MessagingResourceCacheEntry(resolvedUrl, _options.CacheTtl, _timeProvider);
+        _urlCache.TryAdd(cacheKey, entry);
+
+        // Evict LRU entries if cache size exceeds max
+        if (_options.MaxCacheSize > 0 && _urlCache.Count > _options.MaxCacheSize)
+        {
+            EvictLruEntries(_urlCache, _options.MaxCacheSize);
+        }
+        
+        _logger.LogDebug("Resolved and cached queue URL: {Destination} → {Url} (tenant: {TenantId}, scope: {Scope}, TTL: {Ttl})",
+            destination, resolvedUrl, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope, _options.CacheTtl);
+
+        return resolvedUrl;
+    }
+
+    /// <summary>
+    /// Internal method to resolve queue URL without caching.
+    /// Separated from caching logic for clarity and testability.
+    /// Phase 1: Uses shared queues with message-attribute based tenant isolation.
+    /// Per-tenant resources (separate queues per tenant) are not yet implemented.
+    /// </summary>
+    private string ResolveQueueUrlInternal(string destination, MessageScope scope)
+    {
+        // First check if there's an explicit mapping (for backward compatibility)
         if (_options.Sqs.QueueUrlMappings.TryGetValue(destination, out var mappedUrl))
         {
             return mappedUrl;
         }
 
-        return string.IsNullOrWhiteSpace(_options.Sqs.DefaultQueueUrl)
-            ? destination
-            : _options.Sqs.DefaultQueueUrl;
+        // Phase 1: Shared queue model - all tenants use the same physical queue
+        // Tenant isolation is enforced via message attributes (pervaxis_tenant_id)
+        // Format: {queueName}-shared
+        string queueName = _options.Sqs.SharedQueueNameFormat
+            .Replace("{queueName}", destination, StringComparison.Ordinal);
+
+        _logger.LogDebug(
+            "Resolved queue name (shared model): {Destination} → {QueueName}",
+            destination, queueName);
+
+        // If queue name looks like a full URL, return it as-is
+        if (queueName.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            queueName.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+        {
+            return queueName;
+        }
+
+        // Otherwise, construct queue URL from queue name
+        // Format: https://sqs.{region}.amazonaws.com/{accountId}/{queueName}
+        string resolvedUrl;
+        if (!string.IsNullOrWhiteSpace(_options.Sqs.DefaultQueueUrl))
+        {
+            // Replace the queue name in default URL
+            var baseUrl = _options.Sqs.DefaultQueueUrl;
+            var lastSlash = baseUrl.LastIndexOf('/');
+            if (lastSlash > 0)
+            {
+                resolvedUrl = baseUrl[..lastSlash] + "/" + queueName;
+            }
+            else
+            {
+                resolvedUrl = queueName; // Fallback
+            }
+        }
+        else
+        {
+            // Fallback: return queue name (works with LocalStack)
+            resolvedUrl = queueName;
+        }
+
+        return resolvedUrl;
+    }
+
+    /// <summary>
+    /// Invalidates the cache for a specific queue URL after a not-found error.
+    /// </summary>
+    private void InvalidateQueueCache(string destination, MessageScope scope)
+    {
+        var tenantId = scope == MessageScope.Tenant && _tenantContext?.IsResolved == true
+            ? _tenantContext.TenantId.Value
+            : string.Empty;
+        
+        var cacheKey = new MessagingResourceCacheKey(destination, tenantId, scope);
+
+        if (_urlCache.TryRemove(cacheKey, out _))
+        {
+            _cacheInvalidations.Add(1, new TagList { { "resource_type", "queue" } });
+            _logger.LogInformation("Invalidated cache for queue: {Destination} (tenant: {TenantId}, scope: {Scope})",
+                destination, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope);
+        }
+    }
+
+    /// <summary>
+    /// Evicts least recently used entries when cache size exceeds maximum.
+    /// Removes 10% of entries (sorted by LastAccessedAt) to reduce thrashing.
+    /// THREAD-SAFE: Snapshot is taken before eviction to avoid concurrent modification issues.
+    /// Only removes entries that are still old after snapshot to avoid removing just-added entries.
+    /// 
+    /// NOTE: The 1-second recently-added protection window allows cache to temporarily exceed max size
+    /// under high burst load. This is by design - prevents race conditions where just-added entries
+    /// are immediately evicted. Cache will shrink below max size once entries age past 1 second.
+    /// </summary>
+    private void EvictLruEntries(
+        ConcurrentDictionary<MessagingResourceCacheKey, MessagingResourceCacheEntry> cache,
+        int maxSize)
+    {
+        var currentSize = cache.Count;
+        if (currentSize <= maxSize)
+        {
+            return;
+        }
+
+        // Remove 10% of entries to avoid frequent evictions
+        var targetRemoveCount = Math.Max(1, currentSize / 10);
+
+        // SAFETY: Take snapshot of entries to avoid enumeration issues under concurrent access
+        // ToArray() creates a defensive copy so concurrent modifications won't throw
+        var snapshot = cache.ToArray();
+
+        // Sort by LastAccessedAt and take oldest entries from snapshot
+        var entriesToRemove = snapshot
+            .OrderBy(kvp => kvp.Value.LastAccessedAt)
+            .Take(targetRemoveCount)
+            .ToList();
+
+        var removedCount = 0;
+        var now = _timeProvider.GetUtcNow();
+
+        foreach (var kvp in entriesToRemove)
+        {
+            // SAFETY: Double-check the entry is still old before removing
+            // This prevents removing entries that were just added or accessed by another thread
+            if (cache.TryGetValue(kvp.Key, out var currentEntry))
+            {
+                // Only remove if entry hasn't been accessed recently (within last second)
+                var timeSinceLastAccess = now - currentEntry.LastAccessedAt;
+                if (timeSinceLastAccess.TotalSeconds >= 1.0)
+                {
+                    // TryRemove on ConcurrentDictionary never throws
+                    if (cache.TryRemove(kvp.Key, out _))
+                    {
+                        removedCount++;
+                    }
+                }
+            }
+        }
+
+        if (removedCount > 0)
+        {
+            _logger.LogInformation(
+                "Evicted {Count} LRU cache entries (cache size: {CurrentSize} → {NewSize}, max: {MaxSize})",
+                removedCount, currentSize, cache.Count, maxSize);
+        }
     }
 
     private string Serialize<T>(T value) => JsonSerializer.Serialize(value, _jsonOptions);
@@ -541,13 +850,60 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
     private void AddTenantAttributes(Dictionary<string, MessageAttributeValue> attributes)
     {
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        // SECURITY: First, reject any caller-supplied reserved attributes (pervaxis_* prefix)
+        // This prevents callers from spoofing tenant IDs or other platform-controlled metadata
+        var reservedKeys = attributes.Keys
+            .Where(k => k.StartsWith(MessagingConstants.ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (reservedKeys.Count > 0)
         {
-            attributes["TenantId"] = new MessageAttributeValue
+            _logger.LogError(
+                "Caller attempted to supply reserved message attributes: {ReservedKeys}. " +
+                "Attributes with prefix '{Prefix}' are platform-controlled and will be rejected.",
+                string.Join(", ", reservedKeys),
+                MessagingConstants.ReservedAttributePrefix);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                $"Reserved message attributes cannot be set by callers. " +
+                $"The following reserved attributes were rejected: {string.Join(", ", reservedKeys)}. " +
+                $"Attributes prefixed with '{MessagingConstants.ReservedAttributePrefix}' are platform-controlled.",
+                MessagingConstants.FailureReasons.ReservedAttributeSupplied,
+                new Dictionary<string, object>
+                {
+                    ["ReservedKeys"] = reservedKeys,
+                    ["ReservedPrefix"] = MessagingConstants.ReservedAttributePrefix
+                });
+        }
+
+        // SECURITY: Fail closed - if tenant isolation is enabled but context not resolved, reject
+        if (_options.EnableTenantIsolation)
+        {
+            if (_tenantContext?.IsResolved != true)
+            {
+                _logger.LogError(
+                    "Tenant isolation is enabled but ITenantContext is not resolved. " +
+                    "Cannot publish message without tenant context.");
+
+                throw new GenesisException(
+                    nameof(SqsMessagingProvider),
+                    "Tenant context not resolved. Cannot publish messages when tenant isolation is enabled. " +
+                    "Ensure ITenantContext is properly configured and a tenant has been resolved for this request.",
+                    "TENANT_CONTEXT_NOT_RESOLVED",
+                    null);
+            }
+
+            // Inject tenant ID from ITenantContext (NEVER trust caller-supplied values)
+            attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
             {
                 DataType = "String",
                 StringValue = _tenantContext.TenantId.Value
             };
+
+            _logger.LogDebug(
+                "Stamped message with tenant ID: {TenantId}",
+                _tenantContext.TenantId.Value);
         }
     }
 

@@ -36,6 +36,20 @@ public sealed class SqsOptions
     public Dictionary<string, string> QueueUrlMappings { get; } = [];
 
     /// <summary>
+    /// Queue name template for tenant-scoped queues.
+    /// Use {queueName} and {tenantId} as placeholders.
+    /// Default: "{queueName}-tenant-{tenantId}"
+    /// </summary>
+    public string TenantQueueNameTemplate { get; set; } = "{queueName}-tenant-{tenantId}";
+
+    /// <summary>
+    /// Queue name template for platform-wide queues.
+    /// Use {queueName} as placeholder.
+    /// Default: "{queueName}-platform"
+    /// </summary>
+    public string PlatformQueueNameTemplate { get; set; } = "{queueName}-platform";
+
+    /// <summary>
     /// Gets or sets the maximum number of messages to retrieve in a single receive call.
     /// Valid range: 1–10 (SQS limit). Default is 10.
     /// </summary>
@@ -52,4 +66,20 @@ public sealed class SqsOptions
     /// The message is hidden from other consumers for this duration. Default is 30.
     /// </summary>
     public int VisibilityTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Queue name template for shared queues (Phase 1 implementation).
+    /// Use {queueName} as placeholder.
+    /// Default: "{queueName}-shared"
+    /// Example: "orders-shared" for all tenants using the "orders" queue.
+    /// </summary>
+    public string SharedQueueNameFormat { get; set; } = "{queueName}-shared";
+
+    /// <summary>
+    /// Dead-letter queue URL for messages that fail validation.
+    /// Used by consumer side to explicitly send invalid messages to DLQ with failure reasons.
+    /// If null, messages that fail validation will be deleted (not recommended for production).
+    /// Example: "https://sqs.ap-south-1.amazonaws.com/123456789012/my-dlq"
+    /// </summary>
+    public string? DlqUrl { get; set; }
 }
