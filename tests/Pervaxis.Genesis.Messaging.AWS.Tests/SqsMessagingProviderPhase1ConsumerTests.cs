@@ -42,8 +42,8 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
     private readonly SqsMessagingProvider _provider;
     private const string TestQueueUrl = "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue";
     private const string TestDlqUrl = "https://sqs.us-east-1.amazonaws.com/123456789012/test-dlq";
-    private const string ValidTenantId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"; // Valid lowercase GUID format
-    private const string ValidTenantId2 = "7c9e6679-7425-40de-944b-e07fc1f90ae7"; // Second valid tenant
+    private const string ValidTenantId = "acme-corp"; // Valid: lowercase, alphanumeric + hyphens
+    private const string ValidTenantId2 = "globex-inc"; // Second valid tenant
 
     public SqsMessagingProviderPhase1ConsumerTests()
     {
@@ -132,13 +132,20 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
     }
 
     [Theory(DisplayName = "PHASE1B-CRITICAL-2: Invalid tenant ID formats send message to DLQ")]
-    [InlineData("INVALID-FORMAT-123", "not a GUID")]
-    [InlineData("Acme", "uppercase")]
-    [InlineData("acme-platform", "contains reserved substring")]
-    [InlineData("a-tenant-b", "contains -tenant- substring")]
-    [InlineData("3F2504E0-4F89-41D3-9A0C-0305E82C3301", "uppercase GUID")]
+    [InlineData("INVALID-FORMAT", "uppercase letters")]
+    [InlineData("Acme", "contains uppercase")]
+    [InlineData("acme-platform", "reserved substring -platform-")]
+    [InlineData("a-tenant-b", "reserved substring -tenant-")]
+    [InlineData("admin", "reserved word")]
+    [InlineData("platform", "reserved word")]
+    [InlineData("ab", "too short (< 3 chars)")]
     [InlineData("", "empty string")]
     [InlineData("  ", "whitespace")]
+    [InlineData("acme--corp", "consecutive hyphens")]
+    [InlineData("-acme", "starts with hyphen")]
+    [InlineData("acme-", "ends with hyphen")]
+    [InlineData("acme_corp", "contains underscore")]
+    [InlineData("acme.corp", "contains period")]
     public async Task ReceiveAsync_InvalidTenantIdFormat_SendsToDlq(string invalidTenantId, string reason)
     {
         // Arrange
@@ -668,6 +675,78 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
         _mockScopeFactory.Verify(x => x.BeginScope(It.Is<TenantId>(t => t.Value == ValidTenantId2)), Times.Once);
         tenant1Scope.Verify(x => x.Dispose(), Times.Once);
         tenant2Scope.Verify(x => x.Dispose(), Times.Once);
+    }
+
+    #endregion
+
+    #region Publish-Side Validation Tests
+
+    [Fact(DisplayName = "PHASE1B-PUBLISH-1: Invalid tenant ID in context throws on publish")]
+    public async Task PublishAsync_InvalidTenantIdInContext_Throws()
+    {
+        // Arrange
+        var invalidTenantId = new TenantId("INVALID-UPPERCASE");
+        _mockTenantContext.Setup(x => x.IsResolved).Returns(true);
+        _mockTenantContext.Setup(x => x.TenantId).Returns(invalidTenantId);
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<GenesisException>(
+            async () => await _provider.PublishAsync("test-queue", new { data = "test" }));
+
+        exception.ErrorCode.Should().Be("INVALID_TENANT_ID");
+        exception.Message.Should().Contain("INVALID-UPPERCASE");
+    }
+
+    #endregion
+
+    #region Context Lifecycle Tests
+
+    [Fact(DisplayName = "PHASE1B-CONTEXT-1: Context is cleared after ProcessAsync completes")]
+    public async Task ProcessAsync_AfterCompletion_ContextIsCleared()
+    {
+        // Arrange
+        var messages = new List<Message>
+        {
+            new()
+            {
+                MessageId = "msg-1",
+                Body = "{\"data\":\"test\"}",
+                ReceiptHandle = "receipt-1",
+                MessageAttributes = new Dictionary<string, MessageAttributeValue>
+                {
+                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
+                }
+            }
+        };
+
+        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
+            It.IsAny<ReceiveMessageRequest>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
+
+        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
+            It.IsAny<DeleteMessageRequest>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeleteMessageResponse());
+
+        var mockScope = new Mock<IDisposable>();
+        var scopeDisposed = false;
+        mockScope.Setup(x => x.Dispose()).Callback(() => scopeDisposed = true);
+        
+        _mockScopeFactory.Setup(x => x.BeginScope(It.IsAny<TenantId>()))
+            .Returns(mockScope.Object);
+
+        // Act
+        await _provider.ProcessAsync<Dictionary<string, string>>(
+            "test-queue",
+            async msg => await Task.CompletedTask);
+
+        // Allow async cleanup to complete
+        await Task.Delay(50);
+
+        // Assert
+        scopeDisposed.Should().BeTrue("Context scope must be disposed after ProcessAsync completes");
+        mockScope.Verify(x => x.Dispose(), Times.Once);
     }
 
     #endregion

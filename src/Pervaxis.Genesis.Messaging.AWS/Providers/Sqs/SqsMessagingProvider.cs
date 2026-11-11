@@ -33,6 +33,7 @@ using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
+using Pervaxis.Genesis.Base.Validation;
 using Pervaxis.Genesis.Messaging.AWS.Caching;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
@@ -1132,16 +1133,38 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                     null);
             }
 
+            var tenantIdValue = _tenantContext.TenantId.Value;
+
+            // SECURITY: Validate tenant ID format before publishing (fail-closed)
+            var validationResult = TenantIdValidator.Validate(tenantIdValue);
+            if (!validationResult.IsValid)
+            {
+                _logger.LogError(
+                    "Cannot publish message: tenant ID '{TenantId}' is invalid. {ValidationError}",
+                    tenantIdValue, validationResult.ErrorMessage);
+
+                throw new GenesisException(
+                    nameof(SqsMessagingProvider),
+                    $"Invalid tenant ID '{tenantIdValue}': {validationResult.ErrorMessage}. " +
+                    "Messages cannot be published with malformed tenant identifiers.",
+                    "INVALID_TENANT_ID",
+                    new Dictionary<string, object>
+                    {
+                        ["TenantId"] = tenantIdValue,
+                        ["ValidationError"] = validationResult.ErrorMessage!
+                    });
+            }
+
             // Inject tenant ID from ITenantContext (NEVER trust caller-supplied values)
             attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
             {
                 DataType = "String",
-                StringValue = _tenantContext.TenantId.Value
+                StringValue = tenantIdValue
             };
 
             _logger.LogDebug(
                 "Stamped message with tenant ID: {TenantId}",
-                _tenantContext.TenantId.Value);
+                tenantIdValue);
         }
     }
 
@@ -1175,7 +1198,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
     /// <summary>
     /// Phase 1B: Validates and extracts tenant ID from message attributes.
-    /// Uses TenantIdFormat.TryNormalize to enforce GUID format (lowercase, hyphenated).
+    /// Uses TenantIdValidator to enforce platform-wide tenant ID rules.
     /// </summary>
     private (bool IsValid, string? TenantId, string? FailureReason) ValidateAndExtractTenantId(Message message)
     {
@@ -1199,12 +1222,13 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             return (false, null, MessagingConstants.FailureReasons.PlatformNotAllowedInTenantConsumer);
         }
 
-        // Validate tenant ID format: must be a non-empty, lowercase, hyphenated GUID
-        if (!TenantIdFormat.TryNormalize(tenantIdValue, out var _))
+        // Validate tenant ID format using shared validator
+        var validationResult = TenantIdValidator.Validate(tenantIdValue);
+        if (!validationResult.IsValid)
         {
             _logger.LogWarning(
-                "Message {MessageId} has invalid tenant ID format: {TenantId}",
-                message.MessageId, tenantIdValue);
+                "Message {MessageId} has invalid tenant ID '{TenantId}': {ValidationError}",
+                message.MessageId, tenantIdValue, validationResult.ErrorMessage);
             return (false, null, MessagingConstants.FailureReasons.InvalidTenantId);
         }
 
