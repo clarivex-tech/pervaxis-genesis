@@ -409,7 +409,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 QueueUrl = queueUrl,
                 MaxNumberOfMessages = effectiveMax,
                 WaitTimeSeconds = _options.Sqs.WaitTimeSeconds,
-                VisibilityTimeout = _options.Sqs.VisibilityTimeoutSeconds
+                VisibilityTimeout = _options.Sqs.VisibilityTimeoutSeconds,
+                MessageAttributeNames = new List<string> { "All" }  // Phase 1B: Receive all attributes including pervaxis_tenant_id
             };
 
             var response = await _resiliencePipeline.ExecuteAsync(
@@ -421,11 +422,39 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 "Received {Count} messages from SQS queue {QueueUrl}",
                 response.Messages.Count, queueUrl);
 
-            var result = response.Messages
-                .Select(m => Deserialize<T>(m.Body))
-                .Where(m => m is not null)
-                .Select(m => m!)
-                .ToList();
+            // Phase 1B: Process messages with tenant isolation validation
+            var result = new List<T>();
+            foreach (var message in response.Messages)
+            {
+                var deserialized = Deserialize<T>(message.Body);
+                if (deserialized is null)
+                {
+                    _logger.LogWarning("Failed to deserialize message {MessageId}, skipping", message.MessageId);
+                    continue;
+                }
+
+                // Phase 1B: Extract and validate tenant ID from message attributes
+                if (_options.EnableTenantIsolation)
+                {
+                    var validationResult = ValidateAndExtractTenantId(message);
+                    if (!validationResult.IsValid)
+                    {
+                        // Send to DLQ and continue to next message
+                        await SendToDlqAsync(message, validationResult.FailureReason!, queueUrl, cancellationToken);
+                        
+                        // Delete the invalid message from the original queue
+                        await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
+                        continue;
+                    }
+
+                    // Valid message: tenant ID extracted successfully
+                    _logger.LogDebug(
+                        "Message {MessageId} validated with tenant {TenantId}",
+                        message.MessageId, validationResult.TenantId);
+                }
+
+                result.Add(deserialized);
+            }
 
             // Record metrics
             var tags = GetMetricTags("receive", "success", "sqs");
@@ -933,5 +962,107 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         }
 
         return tags;
+    }
+
+    /// <summary>
+    /// Phase 1B: Validates and extracts tenant ID from message attributes.
+    /// </summary>
+    private (bool IsValid, string? TenantId, string? FailureReason) ValidateAndExtractTenantId(Message message)
+    {
+        // Check if pervaxis_tenant_id attribute exists
+        if (!message.MessageAttributes.TryGetValue(MessagingConstants.TenantIdAttribute, out var tenantIdAttr))
+        {
+            _logger.LogWarning(
+                "Message {MessageId} is missing required attribute {AttributeName}",
+                message.MessageId, MessagingConstants.TenantIdAttribute);
+            return (false, null, MessagingConstants.FailureReasons.MissingTenantId);
+        }
+
+        var tenantIdValue = tenantIdAttr.StringValue;
+
+        // Validate tenant ID format - must be a valid GUID in lowercase hyphenated format
+        if (string.IsNullOrWhiteSpace(tenantIdValue) || 
+            !Guid.TryParseExact(tenantIdValue, "D", out var guid) || 
+            guid == Guid.Empty)
+        {
+            _logger.LogWarning(
+                "Message {MessageId} has invalid tenant ID format: {TenantId}",
+                message.MessageId, tenantIdValue);
+            return (false, null, MessagingConstants.FailureReasons.InvalidTenantId);
+        }
+
+        return (true, tenantIdValue, null);
+    }
+
+    /// <summary>
+    /// Phase 1B: Sends a message to the dead-letter queue with failure reason.
+    /// </summary>
+    private async Task SendToDlqAsync(
+        Message originalMessage,
+        string failureReason,
+        string sourceQueueUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.Sqs.DlqUrl))
+        {
+            _logger.LogWarning(
+                "No DLQ configured. Dropping invalid message {MessageId} with reason: {FailureReason}",
+                originalMessage.MessageId, failureReason);
+            return;
+        }
+
+        try
+        {
+            var dlqRequest = new SendMessageRequest
+            {
+                QueueUrl = _options.Sqs.DlqUrl,
+                MessageBody = originalMessage.Body,
+                MessageAttributes = new Dictionary<string, MessageAttributeValue>(originalMessage.MessageAttributes)
+                {
+                    [MessagingConstants.FailureReasonAttribute] = new MessageAttributeValue
+                    {
+                        DataType = "String",
+                        StringValue = failureReason
+                    }
+                }
+            };
+
+            await _sqsClient.Value.SendMessageAsync(dlqRequest, cancellationToken).ConfigureAwait(false);
+
+            _logger.LogWarning(
+                "Sent invalid message {MessageId} to DLQ with reason: {FailureReason}",
+                originalMessage.MessageId, failureReason);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to send message {MessageId} to DLQ. Message will remain in source queue.",
+                originalMessage.MessageId);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Phase 1B: Deletes a message from the queue after processing or DLQ routing.
+    /// </summary>
+    private async Task DeleteMessageAsync(string queueUrl, string receiptHandle, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _sqsClient.Value.DeleteMessageAsync(
+                new DeleteMessageRequest
+                {
+                    QueueUrl = queueUrl,
+                    ReceiptHandle = receiptHandle
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to delete message with receipt handle {ReceiptHandle} from queue {QueueUrl}",
+                receiptHandle, queueUrl);
+            // Don't throw - this is a best-effort cleanup
+        }
     }
 }
