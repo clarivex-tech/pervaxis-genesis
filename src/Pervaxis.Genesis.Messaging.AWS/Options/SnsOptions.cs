@@ -34,4 +34,18 @@ public sealed class SnsOptions
     /// Key: logical destination name. Value: full SNS topic ARN.
     /// </summary>
     public Dictionary<string, string> TopicArnMappings { get; } = [];
+
+    /// <summary>
+    /// Topic name template for tenant-scoped topics.
+    /// Use {topicName} and {tenantId} as placeholders.
+    /// Default: "{topicName}-tenant-{tenantId}"
+    /// </summary>
+    public string TenantTopicNameTemplate { get; set; } = "{topicName}-tenant-{tenantId}";
+
+    /// <summary>
+    /// Topic name template for platform-wide topics.
+    /// Use {topicName} as placeholder.
+    /// Default: "{topicName}-platform"
+    /// </summary>
+    public string PlatformTopicNameTemplate { get; set; } = "{topicName}-platform";
 }
