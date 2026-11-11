@@ -27,21 +27,24 @@ namespace Pervaxis.Genesis.Base.Validation;
 /// <remarks>
 /// Rules:
 /// - Lowercase letters, digits, and hyphens only
-/// - Must start with a letter
+/// - Must start with a letter OR digit (supports GUIDs from Cognito)
 /// - Must end with a letter or digit (not hyphen)
 /// - Length: 3-63 characters (AWS naming constraints)
 /// - No consecutive hyphens (..)
 /// - Reserved words rejected: platform, tenant, admin, system, root, default
 /// - Reserved substrings rejected: -tenant-, -admin-, -system-
+/// 
+/// Note: This validator supports both GUID-based tenant IDs from Cognito (e.g., 3f2504e0-4f89-41d3-9a0c-0305e82c3301)
+/// and human-readable IDs (e.g., acme-corp).
 /// </remarks>
 public static class TenantIdValidator
 {
     private const int MinLength = 3;
     private const int MaxLength = 63;
     
-    // Lowercase alphanumeric + hyphens, start with letter, end with letter/digit
+    // Lowercase alphanumeric + hyphens, start with letter OR digit, end with letter/digit
     private static readonly Regex ValidFormatRegex = new(
-        @"^[a-z][a-z0-9-]*[a-z0-9]$",
+        @"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex ConsecutiveHyphensRegex = new(
@@ -92,12 +95,12 @@ public static class TenantIdValidator
             return ValidationResult.Failure($"Tenant ID must not exceed {MaxLength} characters (got {tenantId.Length})");
         }
 
-        // Format check: lowercase alphanumeric + hyphens, start with letter, end with letter/digit
+        // Format check: lowercase alphanumeric + hyphens, start with letter/digit, end with letter/digit
         if (!ValidFormatRegex.IsMatch(tenantId))
         {
             return ValidationResult.Failure(
                 "Tenant ID must contain only lowercase letters, digits, and hyphens; " +
-                "must start with a letter and end with a letter or digit");
+                "must start and end with a letter or digit");
         }
 
         // No consecutive hyphens
