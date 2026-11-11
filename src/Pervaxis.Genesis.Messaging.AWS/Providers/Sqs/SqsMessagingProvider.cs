@@ -980,10 +980,21 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         var tenantIdValue = tenantIdAttr.StringValue;
 
-        // Validate tenant ID format - must be a valid GUID in lowercase hyphenated format
-        if (string.IsNullOrWhiteSpace(tenantIdValue) || 
-            !Guid.TryParseExact(tenantIdValue, "D", out var guid) || 
-            guid == Guid.Empty)
+        // Reject platform messages in tenant-scoped consumers
+        if (string.Equals(tenantIdValue, MessagingConstants.PlatformTenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "Message {MessageId} has platform tenant ID in tenant consumer",
+                message.MessageId);
+            return (false, null, MessagingConstants.FailureReasons.PlatformNotAllowedInTenantConsumer);
+        }
+
+        // Validate tenant ID format using TenantId constructor (will throw if invalid)
+        try
+        {
+            _ = new TenantId(tenantIdValue);
+        }
+        catch (ArgumentException)
         {
             _logger.LogWarning(
                 "Message {MessageId} has invalid tenant ID format: {TenantId}",
@@ -1005,10 +1016,18 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     {
         if (string.IsNullOrWhiteSpace(_options.Sqs.DlqUrl))
         {
-            _logger.LogWarning(
-                "No DLQ configured. Dropping invalid message {MessageId} with reason: {FailureReason}",
+            _logger.LogError(
+                "CRITICAL: No DLQ configured. Invalid message {MessageId} will be DROPPED. Reason: {FailureReason}",
                 originalMessage.MessageId, failureReason);
-            return;
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                "DLQ not configured but required for message validation failures. Message cannot be safely discarded.",
+                "DLQ_NOT_CONFIGURED",
+                new Dictionary<string, object>
+                {
+                    ["MessageId"] = originalMessage.MessageId,
+                    ["FailureReason"] = failureReason
+                });
         }
 
         try
@@ -1036,9 +1055,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Failed to send message {MessageId} to DLQ. Message will remain in source queue.",
-                originalMessage.MessageId);
-            throw;
+                "CRITICAL: Failed to send message {MessageId} to DLQ. Message will NOT be deleted from source queue to prevent data loss. Reason: {FailureReason}",
+                originalMessage.MessageId, failureReason);
+            throw; // Propagate to prevent message deletion
         }
     }
 
