@@ -20,14 +20,13 @@ namespace Pervaxis.Genesis.Messaging.AWS;
 
 /// <summary>
 /// Represents a received message with its payload and metadata.
-/// PLACEHOLDER: This type is part of Phase 1B (consumer side) implementation.
-/// Phase 1A (publish side) only requires this type to exist for compilation.
+/// Phase 1B: Includes tenant ID extracted from message attributes for proper tenant scoping.
 /// </summary>
 /// <typeparam name="T">The type of the message payload.</typeparam>
 /// <param name="Message">The deserialized message payload.</param>
 /// <param name="ReceiptHandle">Receipt handle for acknowledging/deleting the message.</param>
 /// <param name="MessageId">Unique identifier assigned by the messaging service.</param>
-/// <param name="TenantId">The tenant ID extracted from message attributes (Phase 1B).</param>
+/// <param name="TenantId">The tenant ID extracted from message attributes (null if tenant isolation disabled).</param>
 public sealed record ReceivedMessage<T>(
     T Message,
     string ReceiptHandle,

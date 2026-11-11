@@ -54,6 +54,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     private readonly MessagingOptions _options;
     private readonly ILogger<SqsMessagingProvider> _logger;
     private readonly ITenantContext? _tenantContext;
+    private readonly ITenantScopeFactory? _tenantScopeFactory;
     private readonly Lazy<IAmazonSQS> _sqsClient;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
@@ -111,6 +112,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         IOptions<MessagingOptions> options,
         ILogger<SqsMessagingProvider> logger,
         ITenantContext? tenantContext = null,
+        ITenantScopeFactory? tenantScopeFactory = null,
         string? environment = null,
         TimeProvider? timeProvider = null)
     {
@@ -120,6 +122,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _tenantScopeFactory = tenantScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
         ValidateOptions(environment);
@@ -385,6 +388,12 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Phase 1B: Validates tenant IDs and dead-letters invalid messages.
+    /// Does NOT set ITenantContext - caller must manage tenant scoping.
+    /// For automatic tenant scoping, use <see cref="ProcessAsync{T}"/> instead.
+    /// For manual scoping with metadata, use <see cref="ReceiveWithMetadataAsync{T}"/>.
+    /// </remarks>
     public async Task<IEnumerable<T>> ReceiveAsync<T>(
         string queue,
         int maxMessages = 10,
@@ -645,6 +654,206 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                     "EnableTenantIsolation=false is ONLY allowed in 'Development' or 'Test' environments.");
             }
         }
+    }
+
+    /// <summary>
+    /// Phase 1B: Receives messages with full metadata including tenant IDs.
+    /// Validates and dead-letters invalid messages. Returns only valid messages with their tenant IDs.
+    /// Caller is responsible for creating tenant scopes when processing messages.
+    /// </summary>
+    /// <typeparam name="T">The type of the message payload.</typeparam>
+    /// <param name="queue">Queue name (logical identifier, not URL).</param>
+    /// <param name="maxMessages">Maximum number of messages to receive (1-10, default 10).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of received messages with metadata including tenant IDs.</returns>
+    public async Task<IEnumerable<ReceivedMessage<T>>> ReceiveWithMetadataAsync<T>(
+        string queue,
+        int maxMessages = 10,
+        CancellationToken cancellationToken = default)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        using var activity = PervaxisActivitySource.StartActivity("messaging.receive_with_metadata", ActivityKind.Consumer);
+        activity?.SetTag("messaging.system", "sqs");
+        activity?.SetTag("messaging.destination", queue);
+        activity?.SetTag("messaging.operation", "receive_with_metadata");
+        AddTenantTags(activity);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(queue);
+
+        var queueUrl = ResolveQueueUrl(queue);
+        var effectiveMax = Math.Clamp(maxMessages, 1, SqsMaxBatchSize);
+
+        try
+        {
+            var request = new ReceiveMessageRequest
+            {
+                QueueUrl = queueUrl,
+                MaxNumberOfMessages = effectiveMax,
+                WaitTimeSeconds = _options.Sqs.WaitTimeSeconds,
+                VisibilityTimeout = _options.Sqs.VisibilityTimeoutSeconds,
+                MessageAttributeNames = new List<string> { "All" }
+            };
+
+            var response = await _resiliencePipeline.ExecuteAsync(
+                async ct => await _sqsClient.Value.ReceiveMessageAsync(request, ct).ConfigureAwait(false),
+                cancellationToken);
+
+            activity?.SetTag("messaging.message_count", response.Messages.Count);
+
+            var result = new List<ReceivedMessage<T>>();
+            foreach (var message in response.Messages)
+            {
+                var deserialized = Deserialize<T>(message.Body);
+                if (deserialized is null)
+                {
+                    _logger.LogWarning("Failed to deserialize message {MessageId}, skipping", message.MessageId);
+                    continue;
+                }
+
+                if (_options.EnableTenantIsolation)
+                {
+                    var validationResult = ValidateAndExtractTenantId(message);
+                    if (!validationResult.IsValid)
+                    {
+                        await SendToDlqAsync(message, validationResult.FailureReason!, queueUrl, cancellationToken);
+                        await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
+                        continue;
+                    }
+
+                    result.Add(new ReceivedMessage<T>(
+                        deserialized,
+                        message.ReceiptHandle,
+                        message.MessageId,
+                        validationResult.TenantId));
+                }
+                else
+                {
+                    result.Add(new ReceivedMessage<T>(
+                        deserialized,
+                        message.ReceiptHandle,
+                        message.MessageId,
+                        null));
+                }
+            }
+
+            var tags = GetMetricTags("receive_with_metadata", "success", "sqs");
+            _operationsCounter.Add(1, tags);
+            _messagesReceived.Add(result.Count, tags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+
+            return result;
+        }
+        catch (QueueDoesNotExistException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SQS queue {QueueUrl} does not exist", queueUrl);
+            InvalidateQueueCache(queue, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("receive_with_metadata", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                $"Queue '{queueUrl}' not provisioned.",
+                ex,
+                "QUEUE_NOT_FOUND",
+                new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
+        }
+        catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            throw;
+        }
+        catch (GenesisException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SQS receive with metadata operation failed");
+
+            var errorTags = GetMetricTags("receive_with_metadata", "error", "sqs");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SqsMessagingProvider),
+                "SQS receive with metadata operation failed.",
+                ex);
+        }
+    }
+
+    /// <summary>
+    /// Phase 1B: Receives and processes messages with automatic tenant scoping.
+    /// For each message: validates tenant, sets ITenantContext, runs handler, clears context, deletes message.
+    /// If handler throws, context is cleared but message is NOT deleted (SQS will retry).
+    /// </summary>
+    /// <typeparam name="T">The type of the message payload.</typeparam>
+    /// <param name="queue">Queue name (logical identifier, not URL).</param>
+    /// <param name="handler">Async handler function to process each message.</param>
+    /// <param name="maxMessages">Maximum number of messages to receive (1-10, default 10).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Task representing the async operation.</returns>
+    public async Task ProcessAsync<T>(
+        string queue,
+        Func<T, Task> handler,
+        int maxMessages = 10,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+
+        if (_tenantScopeFactory is null)
+        {
+            throw new InvalidOperationException(
+                "ITenantScopeFactory is required for ProcessAsync but was not provided to SqsMessagingProvider. " +
+                "Register ITenantScopeFactory in DI or use ReceiveWithMetadataAsync for manual scope management.");
+        }
+
+        var messages = await ReceiveWithMetadataAsync<T>(queue, maxMessages, cancellationToken);
+
+        // Process each message in its own async flow to prevent context leakage
+        var tasks = messages.Select(async message =>
+        {
+            IDisposable? tenantScope = null;
+            try
+            {
+                // Set tenant context for this message
+                if (_options.EnableTenantIsolation && message.TenantId is not null)
+                {
+                    var tenantId = new TenantId(message.TenantId);
+                    tenantScope = _tenantScopeFactory.BeginScope(tenantId);
+                }
+
+                // Run handler
+                await handler(message.Message).ConfigureAwait(false);
+
+                // Success: delete message from queue
+                await DeleteMessageAsync(
+                    ResolveQueueUrl(queue),
+                    message.ReceiptHandle,
+                    cancellationToken);
+
+                _logger.LogDebug(
+                    "Processed message {MessageId} for tenant {TenantId}",
+                    message.MessageId, message.TenantId ?? "(none)");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Handler failed for message {MessageId}, tenant {TenantId}. Message will be retried by SQS.",
+                    message.MessageId, message.TenantId ?? "(none)");
+                // Don't delete message - let SQS retry
+                // Don't rethrow - continue processing other messages
+            }
+            finally
+            {
+                // Always clear tenant context
+                tenantScope?.Dispose();
+            }
+        });
+
+        await Task.WhenAll(tasks);
     }
 
     private IAmazonSQS CreateClient()
@@ -966,6 +1175,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
     /// <summary>
     /// Phase 1B: Validates and extracts tenant ID from message attributes.
+    /// Uses TenantIdFormat.TryNormalize to enforce GUID format (lowercase, hyphenated).
     /// </summary>
     private (bool IsValid, string? TenantId, string? FailureReason) ValidateAndExtractTenantId(Message message)
     {
@@ -989,12 +1199,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             return (false, null, MessagingConstants.FailureReasons.PlatformNotAllowedInTenantConsumer);
         }
 
-        // Validate tenant ID format using TenantId constructor (will throw if invalid)
-        try
-        {
-            _ = new TenantId(tenantIdValue);
-        }
-        catch (ArgumentException)
+        // Validate tenant ID format: must be a non-empty, lowercase, hyphenated GUID
+        if (!TenantIdFormat.TryNormalize(tenantIdValue, out var _))
         {
             _logger.LogWarning(
                 "Message {MessageId} has invalid tenant ID format: {TenantId}",
