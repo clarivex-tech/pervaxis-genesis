@@ -314,6 +314,24 @@ public sealed class TenantKeyResolverTests
             .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
+    [Theory]
+    [InlineData("100%")]
+    [InlineData("discount_50%.txt")]
+    [InlineData("Q1_2024_%_growth.pdf")]
+    public void ResolveKey_WithStrayPercent_PassesUnchanged(string keyWithStrayPercent)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var result = resolver.ResolveKey(keyWithStrayPercent);
+
+        // Assert - stray % not followed by two hex digits should pass unchanged
+        // Uri.UnescapeDataString won't decode "100%" because it's not valid encoding
+        result.Should().Be($"tenants/acme/{keyWithStrayPercent}");
+    }
+
     [Fact]
     public void ResolveKey_WithPercentEncodedTraversal_ThrowsGenesisException()
     {
