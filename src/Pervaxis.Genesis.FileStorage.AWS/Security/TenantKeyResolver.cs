@@ -47,25 +47,26 @@ public sealed class TenantKeyResolver
     private readonly ILogger<TenantKeyResolver> _logger;
     private readonly bool _enableTenantIsolation;
 
-    // Dangerous patterns that could bypass validation
+    // Path traversal detection (after URL decoding and Unicode normalization)
     private static readonly Regex PathTraversalRegex = new(
-        @"(\.\./|\.\.\\|%2e%2e%2f|%2e%2e%5c|%252e%252e%252f|%252e%252e%255c)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        @"(\.\./|\.\.\\|\.\.(?:/|\\|$))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    // Control characters
     private static readonly Regex ControlCharacterRegex = new(
         @"[\x00-\x1f\x7f]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private static readonly Regex LeadingSlashRegex = new(
-        @"^\/+",
+    // Unicode lookalike characters that could represent dots or slashes
+    // Fullwidth: ／ (U+FF0F), ． (U+FF0E)
+    // Other: ⁄ (U+2044 fraction slash), ∕ (U+2215 division slash)
+    private static readonly Regex UnicodeLookalikeRegex = new(
+        @"[\uFF0F\uFF0E\u2044\u2215\u2216\u29F8\uFE68\uFF3C]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private static readonly Regex MultipleSlashesRegex = new(
-        @"\/\/+",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
+    // Empty segments after normalization
     private static readonly Regex EmptySegmentRegex = new(
-        @"(^\/|\/\/|\/\.|\/\.\.|\/\.$|\/\.\.\/$)",
+        @"(^/|//|/\s|/\.$|/\.\.$)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -104,10 +105,7 @@ public sealed class TenantKeyResolver
                     _enableTenantIsolation,
                     _tenantContext is null ? "null" : "not-resolved");
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    "Tenant context not resolved. Cannot perform S3 operations without tenant context.",
-                    errorCode: FileStorageConstants.FailureReasons.TenantContextNotResolved);
+                throw new GenesisException(nameof(TenantKeyResolver), "Tenant context not resolved. Cannot perform S3 operations without tenant context.", FileStorageConstants.FailureReasons.TenantContextNotResolved, null);
             }
 
             // Validate tenant ID format
@@ -120,14 +118,12 @@ public sealed class TenantKeyResolver
                     tenantId,
                     validationResult.ErrorMessage);
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    $"Invalid tenant ID format: {validationResult.ErrorMessage}",
-                    errorCode: FileStorageConstants.FailureReasons.InvalidTenantId);
+                throw new GenesisException(nameof(TenantKeyResolver), $"Invalid tenant ID format: {validationResult.ErrorMessage}", FileStorageConstants.FailureReasons.InvalidTenantId, null);
             }
 
-            // Normalize and validate the user key
-            var normalizedKey = NormalizeKey(userKey);
+            // URL decode until stable, then normalize and validate
+            var decodedKey = UrlDecodeUntilStable(userKey);
+            var normalizedKey = NormalizeKey(decodedKey);
             ValidateKeyFormat(normalizedKey);
 
             // Build full key: tenants/{tenantId}/{normalizedKey}
@@ -144,14 +140,14 @@ public sealed class TenantKeyResolver
                     expectedPrefix,
                     fullKey);
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    "Key construction validation failed",
-                    errorCode: FileStorageConstants.FailureReasons.InvalidKeyFormat);
+                throw new GenesisException(nameof(TenantKeyResolver), "Key construction validation failed", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
             }
 
-            // Validate final key length (AWS S3 limit: 1024 bytes)
+            // Validate final key length in UTF-8 bytes (AWS S3 limit: 1024 bytes)
             ValidateKeyLength(fullKey);
+
+            // Final security check: verify no .. segments exist after all normalization
+            ValidateNoTraversalSegments(fullKey);
 
             _logger.LogDebug(
                 "Resolved user key {UserKey} to full S3 key {FullKey} for tenant {TenantId}",
@@ -188,10 +184,7 @@ public sealed class TenantKeyResolver
             {
                 _logger.LogError("Tenant context not resolved for S3 list operation");
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    "Tenant context not resolved. Cannot perform S3 list operations without tenant context.",
-                    errorCode: FileStorageConstants.FailureReasons.TenantContextNotResolved);
+                throw new GenesisException(nameof(TenantKeyResolver), "Tenant context not resolved. Cannot perform S3 list operations without tenant context.", FileStorageConstants.FailureReasons.TenantContextNotResolved, null);
             }
 
             var tenantId = _tenantContext.TenantId.Value;
@@ -211,21 +204,37 @@ public sealed class TenantKeyResolver
                 return tenantPrefix;
             }
 
-            // Validate and normalize the user prefix
-            var normalizedPrefix = NormalizeKey(userPrefix);
+            // URL decode and normalize the user prefix
+            var decodedPrefix = UrlDecodeUntilStable(userPrefix);
+            var normalizedPrefix = NormalizeKey(decodedPrefix);
             
-            // Don't validate as a full key - prefixes can be partial
-            // But still check for traversal attempts
+            // Restore trailing slash if the original user prefix had one
+            // (NormalizeKey removes it, but prefixes need it for S3 list operations)
+            // However, don't add a slash if normalizedPrefix is empty (e.g., input was "///")
+            var hadTrailingSlash = userPrefix.EndsWith('/');
+            if (hadTrailingSlash && !string.IsNullOrEmpty(normalizedPrefix) && !normalizedPrefix.EndsWith('/'))
+            {
+                normalizedPrefix += "/";
+            }
+            
+            // Validate for traversal attempts
             if (PathTraversalRegex.IsMatch(normalizedPrefix))
             {
                 _logger.LogWarning(
                     "Path traversal attempt detected in prefix: {Prefix}",
                     userPrefix);
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    $"Invalid prefix: path traversal detected in '{userPrefix}'",
-                    errorCode: FileStorageConstants.FailureReasons.KeyPathTraversal);
+                throw new GenesisException(nameof(TenantKeyResolver), $"Invalid prefix: path traversal detected in '{userPrefix}'", FileStorageConstants.FailureReasons.KeyPathTraversal, null);
+            }
+
+            // Check for Unicode lookalikes
+            if (UnicodeLookalikeRegex.IsMatch(normalizedPrefix))
+            {
+                _logger.LogWarning(
+                    "Unicode lookalike characters detected in prefix: {Prefix}",
+                    userPrefix);
+
+                throw new GenesisException(nameof(TenantKeyResolver), $"Invalid prefix: Unicode lookalike characters detected in '{userPrefix}'", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
             }
 
             var fullPrefix = tenantPrefix + normalizedPrefix;
@@ -238,10 +247,7 @@ public sealed class TenantKeyResolver
                     tenantPrefix,
                     fullPrefix);
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    "Prefix construction validation failed - attempted escape from tenant scope",
-                    errorCode: FileStorageConstants.FailureReasons.KeyPathTraversal);
+                throw new GenesisException(nameof(TenantKeyResolver), "Prefix construction validation failed - attempted escape from tenant scope", FileStorageConstants.FailureReasons.KeyPathTraversal, null);
             }
 
             _logger.LogDebug(
@@ -260,14 +266,24 @@ public sealed class TenantKeyResolver
         }
 
         var nonTenantPrefix = NormalizeKey(userPrefix);
+        
+        // Restore trailing slash if the original user prefix had one
+        // Don't add if normalized prefix is empty
+        if (userPrefix.EndsWith('/') && !string.IsNullOrEmpty(nonTenantPrefix) && !nonTenantPrefix.EndsWith('/'))
+        {
+            nonTenantPrefix += "/";
+        }
+        
         return nonTenantPrefix;
     }
 
     /// <summary>
     /// Strips the tenant prefix from a full S3 key, returning only the user-visible portion.
+    /// SECURITY: Throws if the key doesn't start with the current tenant's prefix.
     /// </summary>
     /// <param name="fullKey">The full S3 key with tenant prefix.</param>
     /// <returns>User-visible key without tenant prefix.</returns>
+    /// <exception cref="GenesisException">Thrown when key doesn't have expected tenant prefix.</exception>
     public string StripTenantPrefix(string fullKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fullKey, nameof(fullKey));
@@ -279,35 +295,37 @@ public sealed class TenantKeyResolver
 
         if (_tenantContext is null || !_tenantContext.IsResolved)
         {
-            // This shouldn't happen if keys were created through ResolveKey,
-            // but handle defensively
-            _logger.LogWarning(
-                "Attempting to strip tenant prefix without resolved tenant context. Returning full key.");
-            return fullKey;
+            _logger.LogError(
+                "Cannot strip tenant prefix without resolved tenant context for key: {FullKey}",
+                fullKey);
+
+            throw new GenesisException(nameof(TenantKeyResolver), "Tenant context not resolved. Cannot strip tenant prefix.", FileStorageConstants.FailureReasons.TenantContextNotResolved, null);
         }
 
         var tenantId = _tenantContext.TenantId.Value;
         var expectedPrefix = string.Format(FileStorageConstants.TenantKeyPrefixFormat, tenantId);
 
-        if (fullKey.StartsWith(expectedPrefix, StringComparison.Ordinal))
+        if (!fullKey.StartsWith(expectedPrefix, StringComparison.Ordinal))
         {
-            var userKey = fullKey[expectedPrefix.Length..];
-            
-            _logger.LogDebug(
-                "Stripped tenant prefix from {FullKey}, returning {UserKey}",
+            // SECURITY: Never return a foreign key silently
+            _logger.LogError(
+                "Attempted to strip tenant prefix from key that doesn't belong to current tenant. " +
+                "Key: {FullKey}, Expected prefix: {ExpectedPrefix}, Current tenant: {TenantId}",
                 fullKey,
-                userKey);
-            
-            return userKey;
+                expectedPrefix,
+                tenantId);
+
+            throw new GenesisException(nameof(TenantKeyResolver), $"Key '{fullKey}' does not belong to tenant '{tenantId}'. Cross-tenant access denied.", FileStorageConstants.FailureReasons.TenantMismatchOnDownload, null);
         }
 
-        // Key doesn't have expected prefix - log warning and return as-is
-        _logger.LogWarning(
-            "Full key {FullKey} does not start with expected tenant prefix {ExpectedPrefix}. Returning as-is.",
+        var userKey = fullKey[expectedPrefix.Length..];
+        
+        _logger.LogDebug(
+            "Stripped tenant prefix from {FullKey}, returning {UserKey}",
             fullKey,
-            expectedPrefix);
-
-        return fullKey;
+            userKey);
+        
+        return userKey;
     }
 
     /// <summary>
@@ -326,51 +344,104 @@ public sealed class TenantKeyResolver
 
         if (_tenantContext is null || !_tenantContext.IsResolved)
         {
-            throw new GenesisException(
-                nameof(TenantKeyResolver),
-                "Tenant context not resolved",
-                errorCode: FileStorageConstants.FailureReasons.TenantContextNotResolved);
+            throw new GenesisException(nameof(TenantKeyResolver), "Tenant context not resolved", FileStorageConstants.FailureReasons.TenantContextNotResolved, null);
         }
 
         return _tenantContext.TenantId.Value;
     }
 
     /// <summary>
+    /// URL-decodes a string until it reaches a stable state (no more %XX sequences).
+    /// Protects against double/triple encoding attacks (%252e%252e → %2e%2e → ..).
+    /// Uses Uri.UnescapeDataString to preserve + characters (only decodes %XX).
+    /// </summary>
+    private string UrlDecodeUntilStable(string input)
+    {
+        const int MaxIterations = 10; // Prevent infinite loops
+        var current = input;
+        var iterations = 0;
+
+        while (iterations < MaxIterations)
+        {
+            // Use Uri.UnescapeDataString instead of HttpUtility.UrlDecode
+            // This only decodes %XX sequences and does NOT convert + to space
+            // which is correct for S3 keys where + is a valid character
+            var decoded = Uri.UnescapeDataString(current);
+            
+            // If no change, we've reached stability
+            if (decoded == current)
+            {
+                return current;
+            }
+
+            current = decoded;
+            iterations++;
+        }
+
+        // If we hit max iterations, the input is suspicious
+        _logger.LogWarning(
+            "URL decode did not stabilize after {MaxIterations} iterations for input: {Input}",
+            MaxIterations,
+            input);
+
+        throw new GenesisException(nameof(TenantKeyResolver), $"Excessive URL encoding detected in key (>{MaxIterations} levels)", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
+    }
+
+    /// <summary>
     /// Normalizes an S3 key by:
+    /// - Applying Unicode normalization (FormC)
     /// - Converting backslashes to forward slashes
     /// - Removing leading slashes
     /// - Collapsing multiple consecutive slashes
+    /// - Removing trailing slashes
     /// </summary>
     private static string NormalizeKey(string key)
     {
+        // Apply Unicode normalization (Form C - canonical composition)
+        // This ensures lookalike characters are normalized to standard forms
+        var normalized = key.Normalize(NormalizationForm.FormC);
+
         // Convert backslashes to forward slashes
-        var normalized = key.Replace("\\", "/", StringComparison.Ordinal);
+        normalized = normalized.Replace("\\", "/", StringComparison.Ordinal);
 
         // Remove leading slashes
-        normalized = LeadingSlashRegex.Replace(normalized, string.Empty);
+        normalized = normalized.TrimStart('/');
 
-        // Collapse multiple slashes to single slash
-        normalized = MultipleSlashesRegex.Replace(normalized, "/");
+        // Collapse multiple consecutive slashes
+        while (normalized.Contains("//", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+        }
+
+        // Remove trailing slashes for keys (but not for prefixes - caller handles that)
+        normalized = normalized.TrimEnd('/');
 
         return normalized;
     }
 
     /// <summary>
-    /// Validates key format for security issues.
+    /// Validates key format for security issues after URL decode and Unicode normalization.
     /// </summary>
     private void ValidateKeyFormat(string key)
     {
-        // Check for path traversal patterns (including URL-encoded variants)
+        // Check for Unicode lookalike characters (fullwidth slashes, dots, etc.)
+        if (UnicodeLookalikeRegex.IsMatch(key))
+        {
+            _logger.LogWarning(
+                "Unicode lookalike characters detected in key: {Key}",
+                key);
+
+            throw new GenesisException(nameof(TenantKeyResolver), $"Invalid key format: Unicode lookalike characters detected in '{key}'", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
+        }
+
+        // Check for path traversal patterns (after decoding and normalization)
         if (PathTraversalRegex.IsMatch(key))
         {
             _logger.LogWarning(
                 "Path traversal attempt detected in key: {Key}",
                 key);
 
-            throw new GenesisException(
-                nameof(TenantKeyResolver),
-                $"Invalid key format: path traversal detected in '{key}'",
-                errorCode: FileStorageConstants.FailureReasons.KeyPathTraversal);
+            throw new GenesisException(nameof(TenantKeyResolver), $"Invalid key format: path traversal detected in '{key}'", FileStorageConstants.FailureReasons.KeyPathTraversal, null);
         }
 
         // Check for control characters
@@ -380,26 +451,20 @@ public sealed class TenantKeyResolver
                 "Control characters detected in key: {Key}",
                 key);
 
-            throw new GenesisException(
-                nameof(TenantKeyResolver),
-                $"Invalid key format: control characters detected in '{key}'",
-                errorCode: FileStorageConstants.FailureReasons.InvalidKeyFormat);
+            throw new GenesisException(nameof(TenantKeyResolver), $"Invalid key format: control characters detected in '{key}'", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
         }
 
-        // Check for empty segments (e.g., //, /./, /../)
+        // Check for empty segments
         if (EmptySegmentRegex.IsMatch(key))
         {
             _logger.LogWarning(
                 "Empty segments detected in key: {Key}",
                 key);
 
-            throw new GenesisException(
-                nameof(TenantKeyResolver),
-                $"Invalid key format: empty segments detected in '{key}'",
-                errorCode: FileStorageConstants.FailureReasons.InvalidKeyFormat);
+            throw new GenesisException(nameof(TenantKeyResolver), $"Invalid key format: empty segments detected in '{key}'", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
         }
 
-        // Check for single or double dots as standalone segments
+        // Check for . or .. as standalone segments
         var segments = key.Split('/', StringSplitOptions.RemoveEmptyEntries);
         foreach (var segment in segments)
         {
@@ -409,10 +474,36 @@ public sealed class TenantKeyResolver
                     "Dot segments detected in key: {Key}",
                     key);
 
-                throw new GenesisException(
-                    nameof(TenantKeyResolver),
-                    $"Invalid key format: relative path segments detected in '{key}'",
-                    errorCode: FileStorageConstants.FailureReasons.KeyPathTraversal);
+                throw new GenesisException(nameof(TenantKeyResolver), $"Invalid key format: relative path segments detected in '{key}'", FileStorageConstants.FailureReasons.KeyPathTraversal, null);
+            }
+        }
+
+        // Reject keys that are just slashes or dots
+        if (string.IsNullOrWhiteSpace(key) || key == "/" || key == "." || key == "..")
+        {
+            _logger.LogWarning(
+                "Invalid key format: {Key}",
+                key);
+
+            throw new GenesisException(nameof(TenantKeyResolver), $"Invalid key format: '{key}' is not a valid S3 key", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
+        }
+    }
+
+    /// <summary>
+    /// Final validation: ensures no .. segments exist anywhere in the final key.
+    /// </summary>
+    private void ValidateNoTraversalSegments(string finalKey)
+    {
+        var segments = finalKey.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var segment in segments)
+        {
+            if (segment == "..")
+            {
+                _logger.LogError(
+                    "SECURITY: .. segment found in final key after all normalization: {Key}",
+                    finalKey);
+
+                throw new GenesisException(nameof(TenantKeyResolver), "Security violation: traversal segment in final key", FileStorageConstants.FailureReasons.KeyPathTraversal, null);
             }
         }
     }
@@ -431,10 +522,8 @@ public sealed class TenantKeyResolver
                 keyBytes,
                 FileStorageConstants.MaxKeyLengthBytes);
 
-            throw new GenesisException(
-                nameof(TenantKeyResolver),
-                $"Key exceeds maximum length of {FileStorageConstants.MaxKeyLengthBytes} bytes (got {keyBytes} bytes)",
-                errorCode: FileStorageConstants.FailureReasons.KeyTooLong);
+            throw new GenesisException(nameof(TenantKeyResolver), $"Key exceeds maximum length of {FileStorageConstants.MaxKeyLengthBytes} bytes (got {keyBytes} bytes)", FileStorageConstants.FailureReasons.KeyTooLong, null);
         }
     }
 }
+
