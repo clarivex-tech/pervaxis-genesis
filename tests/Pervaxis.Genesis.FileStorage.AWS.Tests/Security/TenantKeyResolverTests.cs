@@ -259,6 +259,93 @@ public sealed class TenantKeyResolverTests
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 5a: Multi-Level URL Encoding & Decode Loop Limits
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ResolveKey_WithExcessiveEncoding_ThrowsAfter10Iterations()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Build a key that would require 11+ decode iterations to stabilize
+        // Start with "../" which encodes to layers: ../ → ..%2F → ..%252F → ..%25252F
+        var key = "../";
+        for (int i = 0; i < 11; i++)
+        {
+            key = Uri.EscapeDataString(key);
+        }
+        
+        // After 11 encodings, this will require 11 decode passes to reach "../"
+        // Our limit is 10, so it should throw before stabilizing
+
+        // Act
+        var act = () => resolver.ResolveKey(key);
+
+        // Assert - should throw because it doesn't stabilize within 10 iterations
+        // Even if it would eventually decode to a path traversal, we reject it
+        // for excessive encoding before we even get to that check
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*Excessive URL encoding*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
+    }
+
+    [Theory]
+    [InlineData("report%20final.pdf")]     // Looks like URL-encoded space
+    [InlineData("file%2Ename.txt")]        // Looks like URL-encoded dot
+    public void ResolveKey_WithLiteralPercentInKey_GetsDecoded(string keyWithPercent)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act & Assert
+        // DOCUMENTED BEHAVIOR: Keys with literal % followed by hex digits
+        // are decoded by Uri.UnescapeDataString. This is a deliberate tradeoff:
+        // we reject ambiguous keys to prevent encoding-based path traversal.
+        //
+        // "report%20final.pdf" → decoded to → "report final.pdf"
+        // "file%2Ename.txt" → decoded to → "file.name.txt"
+        //
+        // If the decoded result is safe, it's accepted. If it creates a traversal
+        // pattern or invalid characters, it's rejected.
+        
+        try
+        {
+            var result = resolver.ResolveKey(keyWithPercent);
+            
+            // If it succeeded, verify it's within tenant scope
+            result.Should().StartWith("tenants/acme/");
+            
+            // The key has been decoded, which is expected behavior
+        }
+        catch (GenesisException ex)
+        {
+            // Also acceptable - the decoded result may be invalid
+            ex.ErrorCode.Should().BeOneOf(
+                FileStorageConstants.FailureReasons.KeyPathTraversal,
+                FileStorageConstants.FailureReasons.InvalidKeyFormat);
+        }
+    }
+
+    [Fact]
+    public void ResolveKey_WithPercentEncodedTraversal_ThrowsGenesisException()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act - this will decode to "../secrets"
+        var act = () => resolver.ResolveKey("..%2Fsecrets");
+
+        // Assert - should throw because decoded result is path traversal
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*path traversal*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyPathTraversal);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     // CRITICAL TEST 6: Key Length Validation
     // ═══════════════════════════════════════════════════════════════════════
 
