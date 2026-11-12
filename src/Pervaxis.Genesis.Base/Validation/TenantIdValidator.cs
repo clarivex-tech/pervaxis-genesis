@@ -153,7 +153,7 @@ public static class TenantIdValidator
 /// <summary>
 /// Validation result with success flag and optional error message.
 /// </summary>
-public readonly struct ValidationResult
+public readonly struct ValidationResult : IEquatable<ValidationResult>
 {
     /// <summary>
     /// Gets a value indicating whether the validation succeeded.
@@ -180,4 +180,20 @@ public readonly struct ValidationResult
     /// Creates a failed validation result with an error message.
     /// </summary>
     public static ValidationResult Failure(string errorMessage) => new(false, errorMessage);
+
+    /// <inheritdoc />
+    public bool Equals(ValidationResult other) =>
+        IsValid == other.IsValid && string.Equals(ErrorMessage, other.ErrorMessage, StringComparison.Ordinal);
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj) => obj is ValidationResult other && Equals(other);
+
+    /// <inheritdoc />
+    public override int GetHashCode() => HashCode.Combine(IsValid, ErrorMessage);
+
+    /// <summary>Determines whether two results are equal.</summary>
+    public static bool operator ==(ValidationResult left, ValidationResult right) => left.Equals(right);
+
+    /// <summary>Determines whether two results are not equal.</summary>
+    public static bool operator !=(ValidationResult left, ValidationResult right) => !left.Equals(right);
 }

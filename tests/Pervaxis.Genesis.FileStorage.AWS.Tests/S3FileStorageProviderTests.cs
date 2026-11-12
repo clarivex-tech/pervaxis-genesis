@@ -321,8 +321,8 @@ public abstract class S3FileStorageProviderTests
 
             // Act & Assert
             var act = async () => await provider.DownloadAsync("test-file.txt");
-            await act.Should().ThrowAsync<GenesisException>()
-                .WithMessage("*File missing tenant metadata stamp*");
+            (await act.Should().ThrowAsync<GenesisException>())
+                .Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.TenantStampMissing);
         }
         
         [Fact]
@@ -348,8 +348,8 @@ public abstract class S3FileStorageProviderTests
 
             // Act & Assert
             var act = async () => await provider.DownloadAsync("test-file.txt");
-            await act.Should().ThrowAsync<GenesisException>()
-                .WithMessage("*mismatch*");
+            (await act.Should().ThrowAsync<GenesisException>())
+                .Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.TenantMismatchOnDownload);
         }
 
         [Fact]
@@ -467,7 +467,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Setup(x => x.GetObjectMetadataAsync(
                     It.IsAny<GetObjectMetadataRequest>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new GetObjectMetadataResponse());
+                .ReturnsAsync(StampedMetadataResponse());
 
             // Act
             var result = await provider.ExistsAsync("test-file.txt");
@@ -600,6 +600,7 @@ public abstract class S3FileStorageProviderTests
             // The Metadata property is a MetadataCollection that needs to be populated via Add or indexer
             response.Metadata["x-amz-meta-author"] = "test-user";
             response.Metadata["x-amz-meta-version"] = "1.0";
+            response.Metadata["x-amz-meta-pervaxis-tenant-id"] = "test-tenant";
 
             s3Mock.Setup(x => x.GetObjectMetadataAsync(
                     It.IsAny<GetObjectMetadataRequest>(),
@@ -805,7 +806,7 @@ public abstract class S3FileStorageProviderTests
         }
 
         [Fact]
-        public async Task WhenClientWasUsed_DisposesS3Client()
+        public async Task WhenInjectedClientWasUsed_DoesNotDisposeSharedS3Client()
         {
             // Arrange
             var (provider, s3Mock) = CreateProvider();
@@ -813,7 +814,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Setup(x => x.GetObjectMetadataAsync(
                     It.IsAny<GetObjectMetadataRequest>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new GetObjectMetadataResponse());
+                .ReturnsAsync(StampedMetadataResponse());
 
             // Use the provider to trigger client creation
             await provider.ExistsAsync("test-file.txt");
@@ -822,7 +823,8 @@ public abstract class S3FileStorageProviderTests
             provider.Dispose();
 
             // Assert
-            s3Mock.Verify(x => x.Dispose(), Times.Once);
+            // The injected client is a shared Singleton; disposing it per scope would break other requests.
+            s3Mock.Verify(x => x.Dispose(), Times.Never);
         }
     }
 
@@ -892,6 +894,13 @@ public abstract class S3FileStorageProviderTests
         }
         
         return new TenantKeyResolver(tenantContext, Mock.Of<ILogger<TenantKeyResolver>>());
+    }
+
+    private static GetObjectMetadataResponse StampedMetadataResponse(string tenantId = "test-tenant")
+    {
+        var response = new GetObjectMetadataResponse();
+        response.Metadata[FileStorageConstants.TenantIdMetadataKey] = tenantId;
+        return response;
     }
 
     private static MemoryStream CreateTestStream(int sizeBytes)

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### FileStorage (`Pervaxis.Genesis.FileStorage.AWS`): tenant isolation hardening
+
+See [ADR-0001](docs/architecture/ADR-0001-filestorage-tenant-isolation.md) for the full model.
+
+**Security**
+- `IFileStorage` and `TenantKeyResolver` are now Scoped (were Singleton, which captured the first request's tenant).
+- All keys are built by `TenantKeyResolver` as `{KeyPrefix}tenants/{tenantId}/{key}`; an unresolved tenant fails closed.
+- Every upload (single-part and multipart) is stamped with `pervaxis-tenant-id`; `Download`, `Exists` and `GetMetadata` reject objects with a missing or foreign stamp.
+- Callers can no longer set `pervaxis-tenant-id`, `TenantId` or `TenantName` metadata (`RESERVED_METADATA_KEY`).
+- `List` stays inside the tenant prefix on every page and throws if S3 returns a foreign key.
+- Presigned URLs: 60-minute default, configurable maximum capped at 24 hours; over-limit requests throw.
+- The S3 client is a keyed Singleton shared across scopes and is no longer disposed per request.
+
+**Breaking changes**
+- Objects written by v3.4.x (`{KeyPrefix}/tenant-{id}/...`, unstamped) are no longer visible. They are not migrated automatically; see ADR-0001 "Existing objects".
+- `UploadAsync` returns the caller's key without `KeyPrefix`.
+- Invalid keys throw `GenesisException` with an error code instead of `ArgumentException`.
+- Singletons and background services must create a DI scope to use `IFileStorage`.
+- `MaxPresignedUrlExpiryMinutes` above 1440 now fails options validation (was 10080).
+
+**Not included:** Copy/Move and batch delete (deferred); isolation remains app-enforced, not IAM-enforced.
+
+---
+
 ## [1.1.0] - 2026-06-08
 
 ### ✨ New Module: Input Sanitization (`Pervaxis.Genesis.Sanitization`)

@@ -177,12 +177,10 @@ public sealed class TenantKeyResolver
             ValidateKeyFormat(normalizedKey);
 
             // Build full key: tenants/{tenantId}/{normalizedKey}
-            var fullKey = string.Format(
-                FileStorageConstants.TenantKeyPrefixFormat,
-                tenantId) + normalizedKey;
+            var fullKey = FileStorageConstants.GetTenantKeyPrefix(tenantId) + normalizedKey;
 
             // Final verification: ensure the key starts with the expected prefix
-            var expectedPrefix = string.Format(FileStorageConstants.TenantKeyPrefixFormat, tenantId);
+            var expectedPrefix = FileStorageConstants.GetTenantKeyPrefix(tenantId);
             if (!fullKey.StartsWith(expectedPrefix, StringComparison.Ordinal))
             {
                 _logger.LogError(
@@ -261,7 +259,7 @@ public sealed class TenantKeyResolver
             TenantIdValidator.ThrowIfInvalid(tenantId);
 
             // Base tenant prefix
-            var tenantPrefix = string.Format(FileStorageConstants.TenantKeyPrefixFormat, tenantId);
+            var tenantPrefix = FileStorageConstants.GetTenantKeyPrefix(tenantId);
 
             // If no user prefix, return just the tenant prefix
             if (string.IsNullOrWhiteSpace(userPrefix))
@@ -405,7 +403,7 @@ public sealed class TenantKeyResolver
         }
 
         var tenantId = _tenantContext.TenantId.Value;
-        var expectedPrefix = string.Format(FileStorageConstants.TenantKeyPrefixFormat, tenantId);
+        var expectedPrefix = FileStorageConstants.GetTenantKeyPrefix(tenantId);
 
         if (!fullKey.StartsWith(expectedPrefix, StringComparison.Ordinal))
         {
@@ -435,6 +433,7 @@ public sealed class TenantKeyResolver
     /// </summary>
     /// <returns>Tenant ID string.</returns>
     /// <exception cref="GenesisException">Thrown when tenant context is not resolved.</exception>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1024:Use properties where appropriate", Justification = "Throws when the tenant is unresolved; a property must not throw.")]
     public string GetTenantId()
     {
         if (!_enableTenantIsolation)
