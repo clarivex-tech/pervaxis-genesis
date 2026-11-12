@@ -22,9 +22,11 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
 using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
+using Pervaxis.Genesis.FileStorage.AWS.Security;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Tests;
 
@@ -774,9 +776,19 @@ public abstract class S3FileStorageProviderTests
     {
         options ??= CreateValidOptions();
         var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+        var resolverLogger = Mock.Of<ILogger<TenantKeyResolver>>();
         var s3Mock = new Mock<IAmazonS3>();
 
-        var provider = new S3FileStorageProvider(options, logger, s3Mock.Object);
+        // Create a mock tenant context for testing (non-isolated by default)
+        var tenantContext = new Mock<ITenantContext>();
+        tenantContext.Setup(x => x.IsResolved).Returns(false); // No tenant by default for basic tests
+        
+        var resolver = new TenantKeyResolver(
+            tenantContext.Object,
+            resolverLogger,
+            enableTenantIsolation: false); // Disable isolation for basic tests
+
+        var provider = new S3FileStorageProvider(options, logger, s3Mock.Object, resolver);
 
         return (provider, s3Mock);
     }

@@ -31,6 +31,7 @@ using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
+using Pervaxis.Genesis.FileStorage.AWS.Security;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
 
@@ -41,6 +42,7 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 {
     private readonly FileStorageOptions _options;
     private readonly ILogger<S3FileStorageProvider> _logger;
+    private readonly TenantKeyResolver _tenantKeyResolver;
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonS3> _s3Client;
     private readonly ResiliencePipeline _resiliencePipeline;
@@ -72,17 +74,21 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// </summary>
     /// <param name="options">File storage configuration options.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="tenantKeyResolver">Tenant key resolver for secure key resolution.</param>
     /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     public S3FileStorageProvider(
         IOptions<FileStorageOptions> options,
         ILogger<S3FileStorageProvider> logger,
+        TenantKeyResolver tenantKeyResolver,
         ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(tenantKeyResolver);
 
         _options = options.Value;
         _logger = logger;
+        _tenantKeyResolver = tenantKeyResolver;
         _tenantContext = tenantContext;
 
         _options.Validate();
@@ -124,13 +130,16 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         IOptions<FileStorageOptions> options,
         ILogger<S3FileStorageProvider> logger,
         IAmazonS3 s3Client,
+        TenantKeyResolver tenantKeyResolver,
         ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(s3Client);
+        ArgumentNullException.ThrowIfNull(tenantKeyResolver);
 
         _options = options.Value;
+        _tenantKeyResolver = tenantKeyResolver;
         _tenantContext = tenantContext;
         _logger = logger;
         _s3Client = new Lazy<IAmazonS3>(() => s3Client);
@@ -250,6 +259,39 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             var response = await _resiliencePipeline.ExecuteAsync(
                 async ct => await _s3Client.Value.GetObjectAsync(request, ct),
                 cancellationToken);
+
+            // Verify tenant metadata stamp for defense-in-depth
+            if (_options.EnableTenantIsolation)
+            {
+                var expectedTenantId = _tenantKeyResolver.GetTenantId();
+                var metadataKey = $"x-amz-meta-{FileStorageConstants.TenantIdMetadataKey}";
+                
+                if (response.Metadata.Keys.Contains(metadataKey))
+                {
+                    var storedTenantId = response.Metadata[metadataKey];
+                    if (storedTenantId != expectedTenantId)
+                    {
+                        _logger.LogError(
+                            "Tenant ID mismatch on download: expected {ExpectedTenant}, found {StoredTenant} for key {Key}",
+                            expectedTenantId,
+                            storedTenantId,
+                            fullKey);
+
+                        throw new GenesisException(
+                            nameof(S3FileStorageProvider),
+                            $"Tenant ID mismatch: file belongs to '{storedTenantId}', current tenant is '{expectedTenantId}'",
+                            FileStorageConstants.FailureReasons.TenantMismatchOnDownload,
+                            null);
+                    }
+                }
+                else
+                {
+                    // Log warning but allow download (for backwards compatibility with files uploaded before metadata was added)
+                    _logger.LogWarning(
+                        "File {Key} missing tenant ID metadata stamp - may be legacy file",
+                        fullKey);
+                }
+            }
 
             activity?.SetTag("storage.size", response.ContentLength);
             _logger.LogInformation(
@@ -467,6 +509,17 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             throw new ArgumentException("Expiry must be greater than zero.", nameof(expiry));
         }
 
+        // Enforce maximum expiry cap for security
+        var maxExpiry = TimeSpan.FromMinutes(_options.MaxPresignedUrlExpiryMinutes);
+        if (expiry > maxExpiry)
+        {
+            throw new GenesisException(
+                nameof(S3FileStorageProvider),
+                $"Presigned URL expiry cannot exceed {maxExpiry.TotalHours:F0} hours. Requested: {expiry.TotalHours:F1} hours.",
+                FileStorageConstants.FailureReasons.PresignedUrlExpiryExceeded,
+                null);
+        }
+
         try
         {
             var fullKey = GetFullKey(key);
@@ -616,9 +669,8 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
         try
         {
-            var fullPrefix = string.IsNullOrWhiteSpace(prefix)
-                ? _options.KeyPrefix
-                : GetFullKey(prefix);
+            // Use TenantKeyResolver for prefix resolution to ensure tenant isolation
+            var fullPrefix = _tenantKeyResolver.ResolvePrefix(prefix);
 
             _logger.LogDebug(
                 "Listing files with prefix {Prefix} in bucket {Bucket}",
@@ -725,6 +777,13 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             }
         }
 
+        // Add tenant ID metadata stamp for defense-in-depth verification on download
+        if (_options.EnableTenantIsolation)
+        {
+            var tenantId = _tenantKeyResolver.GetTenantId();
+            request.Metadata.Add(FileStorageConstants.TenantIdMetadataKey, tenantId);
+        }
+
         // Add tenant tags
         foreach (var tag in BuildTenantTags())
         {
@@ -778,6 +837,13 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             }
         }
 
+        // Add tenant ID metadata stamp for defense-in-depth verification on download
+        if (_options.EnableTenantIsolation)
+        {
+            var tenantId = _tenantKeyResolver.GetTenantId();
+            request.Metadata.Add(FileStorageConstants.TenantIdMetadataKey, tenantId);
+        }
+
         // Add tenant tags
         foreach (var tag in BuildTenantTags())
         {
@@ -790,37 +856,12 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     }
 
     /// <summary>
-    /// Gets the full S3 key with configured prefix.
+    /// Gets the full S3 key using TenantKeyResolver for secure tenant isolation.
     /// </summary>
     private string GetFullKey(string key)
     {
-        // Validate key doesn't contain path traversal sequences
-        if (key.Contains("../", StringComparison.Ordinal) ||
-            key.Contains("..\\", StringComparison.Ordinal))
-        {
-            throw new ArgumentException(
-                "File key cannot contain path traversal sequences (../ or ..\\). " +
-                "Use forward slashes (/) for path separators.",
-                nameof(key));
-        }
-
-        var parts = new List<string>();
-
-        if (!string.IsNullOrWhiteSpace(_options.KeyPrefix))
-        {
-            parts.Add(_options.KeyPrefix.TrimEnd('/'));
-        }
-
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
-        {
-            parts.Add($"tenant-{_tenantContext.TenantId.Value}");
-        }
-
-        // Normalize the key: convert backslashes, remove leading/trailing slashes, collapse multiple slashes
-        var normalizedKey = NormalizeS3Key(key);
-        parts.Add(normalizedKey);
-
-        return string.Join("/", parts);
+        // Delegate all key resolution to TenantKeyResolver for security validation
+        return _tenantKeyResolver.ResolveKey(key);
     }
 
     /// <summary>
@@ -851,17 +892,12 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// <summary>
     /// Removes the configured prefix from an S3 key.
     /// </summary>
+    /// <summary>
+    /// Removes the tenant prefix from a full S3 key using TenantKeyResolver.
+    /// </summary>
     private string RemoveKeyPrefix(string fullKey)
     {
-        if (string.IsNullOrWhiteSpace(_options.KeyPrefix))
-        {
-            return fullKey;
-        }
-
-        var prefix = _options.KeyPrefix.TrimEnd('/') + "/";
-        return fullKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-            ? fullKey[prefix.Length..]
-            : fullKey;
+        return _tenantKeyResolver.StripTenantPrefix(fullKey);
     }
 
     /// <inheritdoc />
