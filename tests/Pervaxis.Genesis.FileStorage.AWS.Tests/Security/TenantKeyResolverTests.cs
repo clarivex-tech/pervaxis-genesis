@@ -135,16 +135,19 @@ public sealed class TenantKeyResolverTests
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // CRITICAL TEST 3: Path Traversal - URL-Encoded Variants
+    // CRITICAL TEST 3: Path Traversal - URL-Encoded Variants (with decode loop)
     // ═══════════════════════════════════════════════════════════════════════
 
     [Theory]
     [InlineData("%2e%2e/etc/passwd")]           // URL-encoded ../
     [InlineData("%2e%2e%2fetc/passwd")]         // URL-encoded ../
     [InlineData("%2e%2e%5cwindows")]            // URL-encoded ..\
-    [InlineData("%252e%252e%252f")]             // Double-encoded ../
+    [InlineData("%252e%252e%252f")]             // Double-encoded ../ (%25 = %)
     [InlineData("documents/%2e%2e/sensitive")]  // Mixed
     [InlineData("%2E%2E/config")]               // Uppercase encoding
+    [InlineData("%252e%252e%252fetc")]          // Double-encoded with path
+    [InlineData("%25252e%25252e%25252f")]       // Triple-encoded
+    [InlineData("%2e%2e%2F%2e%2e%2Fsecrets")]   // Mixed case multiple levels
     public void ResolveKey_WithUrlEncodedTraversal_ThrowsGenesisException(string encodedKey)
     {
         // Arrange
@@ -158,6 +161,31 @@ public sealed class TenantKeyResolverTests
         act.Should().Throw<GenesisException>()
             .WithMessage("*path traversal*")
             .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyPathTraversal);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 4: Unicode Lookalike Characters
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData("documents／file.pdf")]          // Fullwidth solidus (U+FF0F)
+    [InlineData("documents．．／sensitive")]      // Fullwidth dots and slash
+    [InlineData("．．／etc／passwd")]            // All fullwidth
+    [InlineData("files⁄secrets")]               // Fraction slash (U+2044)
+    [InlineData("data∕config")]                 // Division slash (U+2215)
+    public void ResolveKey_WithUnicodeLookalikes_ThrowsGenesisException(string keyWithLookalikes)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var act = () => resolver.ResolveKey(keyWithLookalikes);
+
+        // Assert
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*Unicode lookalike*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -187,21 +215,21 @@ public sealed class TenantKeyResolverTests
     }
 
     [Theory]
-    [InlineData("documents//report.pdf")]       // Double slash
-    [InlineData("//documents")]                 // Leading double slash
-    [InlineData("documents///deep")]            // Triple slash
-    public void ResolveKey_WithEmptySegments_HandlesGracefully(string keyWithEmptySegments)
+    [InlineData("")]
+    [InlineData("/")]
+    [InlineData("//")]
+    [InlineData("///")]
+    public void ResolveKey_WithEmptyOrSlashOnly_ThrowsException(string emptyKey)
     {
         // Arrange
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
 
-        // Act - normalization should handle multiple slashes
-        var result = resolver.ResolveKey(keyWithEmptySegments);
+        // Act
+        var act = () => resolver.ResolveKey(emptyKey);
 
-        // Assert - should normalize to single slashes
-        result.Should().StartWith("tenants/acme/");
-        result.Should().NotContain("//");
+        // Assert
+        act.Should().Throw<Exception>(); // ArgumentException or GenesisException
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -420,31 +448,35 @@ public sealed class TenantKeyResolverTests
     }
 
     [Fact]
-    public void StripTenantPrefix_WithWrongTenantPrefix_ReturnsOriginalKey()
+    public void StripTenantPrefix_WithWrongTenantPrefix_ThrowsGenesisException()
     {
         // Arrange: Current context is for "acme" but key belongs to "globex"
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
 
         // Act
-        var result = resolver.StripTenantPrefix("tenants/globex/documents/report.pdf");
+        var act = () => resolver.StripTenantPrefix("tenants/globex/documents/report.pdf");
 
-        // Assert - should return as-is since it doesn't match current tenant
-        result.Should().Be("tenants/globex/documents/report.pdf");
+        // Assert - should throw since it doesn't match current tenant
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*does not belong to*tenant*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.TenantMismatchOnDownload);
     }
 
     [Fact]
-    public void StripTenantPrefix_WithoutTenantPrefix_ReturnsOriginalKey()
+    public void StripTenantPrefix_WithoutTenantPrefix_ThrowsGenesisException()
     {
         // Arrange
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
 
         // Act
-        var result = resolver.StripTenantPrefix("documents/report.pdf");
+        var act = () => resolver.StripTenantPrefix("documents/report.pdf");
 
-        // Assert
-        result.Should().Be("documents/report.pdf");
+        // Assert - should throw since it doesn't start with tenant prefix
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*does not belong to*tenant*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.TenantMismatchOnDownload);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -670,5 +702,298 @@ public sealed class TenantKeyResolverTests
 
         // Assert
         act.Should().Throw<ArgumentException>();
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 15: Prefix Collision Prevention
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ResolveKey_WithSimilarTenantIds_PreventsPrefixCollision()
+    {
+        // Arrange: Test that "acme" and "acme-corp" don't collide
+        var mockContextAcme = CreateMockTenantContext("acme");
+        var mockContextAcmeCorp = CreateMockTenantContext("acme-corp");
+        
+        var resolverAcme = CreateResolver(mockContextAcme.Object);
+        var resolverAcmeCorp = CreateResolver(mockContextAcmeCorp.Object);
+
+        // Act
+        var acmeKey = resolverAcme.ResolveKey("shared/document.pdf");
+        var acmeCorpKey = resolverAcmeCorp.ResolveKey("shared/document.pdf");
+
+        // Assert: Keys should be completely different due to trailing slash
+        acmeKey.Should().Be("tenants/acme/shared/document.pdf");
+        acmeCorpKey.Should().Be("tenants/acme-corp/shared/document.pdf");
+        acmeKey.Should().NotStartWith("tenants/acme-corp/");
+        acmeCorpKey.Should().NotStartWith("tenants/acme/");
+    }
+
+    [Fact]
+    public void ResolvePrefix_WithPrefixMatchingAnotherTenantId_StaysInScope()
+    {
+        // Arrange: Tenant "acme" tries to use prefix "corp" which could match "acme-corp"
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var prefix = resolver.ResolvePrefix("corp");
+
+        // Assert: Should resolve to tenants/acme/corp, NOT tenants/acme-corp
+        prefix.Should().Be("tenants/acme/corp");
+        prefix.Should().StartWith("tenants/acme/");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 16: StripTenantPrefix - Foreign Key Detection
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void StripTenantPrefix_WithForeignTenantKey_Throws()
+    {
+        // Arrange: Current tenant is "acme" but key belongs to "globex"
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+        var foreignKey = "tenants/globex/documents/secret.pdf";
+
+        // Act
+        var act = () => resolver.StripTenantPrefix(foreignKey);
+
+        // Assert: Must throw, never return foreign key silently
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*does not belong to tenant*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.TenantMismatchOnDownload);
+    }
+
+    [Fact]
+    public void StripTenantPrefix_WithNonTenantKey_Throws()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+        var nonTenantKey = "documents/report.pdf"; // No tenant prefix
+
+        // Act
+        var act = () => resolver.StripTenantPrefix(nonTenantKey);
+
+        // Assert: Must throw, never process non-tenant keys
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*does not belong to tenant*");
+    }
+
+    [Fact]
+    public void StripTenantPrefix_WithUnresolvedContext_Throws()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme", isResolved: false);
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var act = () => resolver.StripTenantPrefix("tenants/acme/file.pdf");
+
+        // Assert
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*Tenant context not resolved*");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 17: ResolvePrefix Edge Cases
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("//")]
+    [InlineData("///")]
+    public void ResolvePrefix_WithSlashOnly_ReturnsTenantPrefix(string slashPrefix)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var result = resolver.ResolvePrefix(slashPrefix);
+
+        // Assert: Slashes should normalize away, returning just tenant prefix
+        result.Should().Be("tenants/acme/");
+    }
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData("../")]
+    [InlineData("../other")]
+    [InlineData("%2e%2e/files")]
+    public void ResolvePrefix_WithTraversalPrefix_Throws(string traversalPrefix)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var act = () => resolver.ResolvePrefix(traversalPrefix);
+
+        // Assert: Must block traversal in prefixes
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*path traversal*");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 18: UTF-8 Byte Length Validation
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ResolveKey_ValidatesUtf8ByteLengthNotCharCount()
+    {
+        // Arrange: Multi-byte UTF-8 characters (each emoji is 4 bytes)
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Create a key with emojis that's under char limit but over byte limit
+        // tenants/acme/ = 13 bytes
+        // Each emoji (🔥) = 4 bytes in UTF-8
+        // 253 emojis = 1012 bytes, total = 1025 bytes > 1024 limit
+        var emoji = "🔥";
+        var longEmojiKey = string.Concat(Enumerable.Repeat(emoji, 253));
+
+        // Act
+        var act = () => resolver.ResolveKey(longEmojiKey);
+
+        // Assert: Should fail on byte length, not character count
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*exceeds maximum length*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyTooLong);
+    }
+
+    [Fact]
+    public void ResolveKey_AcceptsKeyAtExactByteLimit()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // tenants/acme/ = 13 bytes, so 1011 ASCII chars should work
+        var keyAtLimit = new string('a', 1011);
+
+        // Act
+        var result = resolver.ResolveKey(keyAtLimit);
+
+        // Assert
+        var byteCount = System.Text.Encoding.UTF8.GetByteCount(result);
+        byteCount.Should().BeLessOrEqualTo(1024);
+        result.Should().StartWith("tenants/acme/");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 19: Property-Based Random String Tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData("../random/../path")]
+    [InlineData("%2e%2e/attempt")]
+    [InlineData("valid/path/../../escape")]
+    [InlineData("...")]
+    [InlineData("a/../b")]
+    public void ResolveKey_WithRandomTraversalStrings_AlwaysThrowsOrStaysInPrefix(string randomKey)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act & Assert: Either throws or returns a key within tenant prefix
+        try
+        {
+            var result = resolver.ResolveKey(randomKey);
+            
+            // If it didn't throw, it MUST start with tenant prefix
+            result.Should().StartWith("tenants/acme/");
+            
+            // And MUST NOT contain .. segments
+            var segments = result.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            segments.Should().NotContain("..");
+        }
+        catch (GenesisException ex)
+        {
+            // Expected for invalid keys
+            ex.ErrorCode.Should().BeOneOf(
+                FileStorageConstants.FailureReasons.KeyPathTraversal,
+                FileStorageConstants.FailureReasons.InvalidKeyFormat);
+        }
+    }
+
+    [Fact]
+    public void ResolveKey_WithLongRandomString_HandlesCorrectly()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+        var random = new Random(42); // Seeded for reproducibility
+
+        // Generate 100 random keys
+        for (int i = 0; i < 100; i++)
+        {
+            var length = random.Next(1, 1100); // Some over limit
+            var chars = new char[length];
+            for (int j = 0; j < length; j++)
+            {
+                chars[j] = (char)random.Next(33, 126); // Printable ASCII
+            }
+            var randomKey = new string(chars);
+
+            // Act & Assert: Either throws or stays in tenant scope
+            try
+            {
+                var result = resolver.ResolveKey(randomKey);
+                result.Should().StartWith("tenants/acme/");
+                
+                // Check byte length
+                var byteCount = System.Text.Encoding.UTF8.GetByteCount(result);
+                byteCount.Should().BeLessOrEqualTo(1024);
+            }
+            catch (GenesisException)
+            {
+                // Expected for invalid/too-long keys
+            }
+            catch (ArgumentException)
+            {
+                // Expected for empty/whitespace
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CRITICAL TEST 20: Final Key Double-Check
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ResolveKey_FinalResultAlwaysStartsWithTenantPrefix()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        var testKeys = new[]
+        {
+            "documents/report.pdf",
+            "a/b/c/d/e/f/g.txt",
+            "file-with-many---dashes.doc",
+            "deep/nested/folder/structure/file.pdf"
+        };
+
+        // Act & Assert
+        foreach (var key in testKeys)
+        {
+            var result = resolver.ResolveKey(key);
+            
+            // MUST start with exact tenant prefix
+            result.Should().StartWith("tenants/acme/");
+            
+            // MUST NOT contain .. after normalization
+            result.Should().NotContain("..");
+            
+            // Split and verify no .. segments
+            var segments = result.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            segments.Should().NotContain("..");
+            segments[0].Should().Be("tenants");
+            segments[1].Should().Be("acme");
+        }
     }
 }
