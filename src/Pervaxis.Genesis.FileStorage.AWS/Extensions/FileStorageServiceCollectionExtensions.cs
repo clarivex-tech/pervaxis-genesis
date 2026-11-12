@@ -21,6 +21,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
 using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
+using Pervaxis.Genesis.FileStorage.AWS.Security;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Extensions;
 
@@ -43,7 +44,13 @@ public static class FileStorageServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<FileStorageOptions>(configuration);
-        services.AddSingleton<IFileStorage, S3FileStorageProvider>();
+        
+        // TenantKeyResolver must be Scoped because it uses ITenantContext
+        services.AddScoped<TenantKeyResolver>();
+        
+        // S3FileStorageProvider must be Scoped to access ITenantContext per-request
+        // This prevents captured tenant context from serving wrong tenant
+        services.AddScoped<IFileStorage, S3FileStorageProvider>();
 
         return services;
     }
@@ -62,7 +69,13 @@ public static class FileStorageServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        services.AddSingleton<IFileStorage, S3FileStorageProvider>();
+        
+        // TenantKeyResolver must be Scoped because it uses ITenantContext
+        services.AddScoped<TenantKeyResolver>();
+        
+        // S3FileStorageProvider must be Scoped to access ITenantContext per-request
+        // This prevents captured tenant context from serving wrong tenant
+        services.AddScoped<IFileStorage, S3FileStorageProvider>();
 
         return services;
     }

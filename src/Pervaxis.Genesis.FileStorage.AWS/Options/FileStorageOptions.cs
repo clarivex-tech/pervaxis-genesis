@@ -46,8 +46,15 @@ public sealed class FileStorageOptions : GenesisOptionsBase
 
     /// <summary>
     /// Default presigned URL expiration time in minutes (default: 60 minutes).
+    /// Maximum allowed: 24 hours (1440 minutes) for security best practices.
     /// </summary>
     public int DefaultPresignedUrlExpiryMinutes { get; set; } = 60;
+
+    /// <summary>
+    /// Maximum presigned URL expiration time in minutes (default: 1440 minutes / 24 hours).
+    /// Prevents callers from creating overly-long-lived URLs that reduce audit trail.
+    /// </summary>
+    public int MaxPresignedUrlExpiryMinutes { get; set; } = 1440; // 24 hours
 
     /// <summary>
     /// Maximum file size in bytes for single-part uploads (default: 5MB).
@@ -83,6 +90,13 @@ public sealed class FileStorageOptions : GenesisOptionsBase
     public ResilienceOptions Resilience { get; set; } = new();
 
     /// <summary>
+    /// Gets or sets the ASP.NET Core environment name for production safety checks.
+    /// Used to validate that LocalStack is not enabled in production environments.
+    /// If not set, production checks are skipped.
+    /// </summary>
+    public string? Environment { get; set; }
+
+    /// <summary>
     /// Validates the file storage configuration.
     /// </summary>
     public override bool Validate()
@@ -97,6 +111,31 @@ public sealed class FileStorageOptions : GenesisOptionsBase
             throw new GenesisConfigurationException(
                 "FileStorageOptions",
                 $"{nameof(DefaultPresignedUrlExpiryMinutes)} must be greater than 0.");
+        }
+
+        if (MaxPresignedUrlExpiryMinutes <= 0 || MaxPresignedUrlExpiryMinutes > 10080) // 7 days max
+        {
+            throw new GenesisConfigurationException(
+                "FileStorageOptions",
+                $"{nameof(MaxPresignedUrlExpiryMinutes)} must be between 1 and 10080 minutes (7 days).");
+        }
+
+        if (DefaultPresignedUrlExpiryMinutes > MaxPresignedUrlExpiryMinutes)
+        {
+            throw new GenesisConfigurationException(
+                "FileStorageOptions",
+                $"{nameof(DefaultPresignedUrlExpiryMinutes)} cannot exceed {nameof(MaxPresignedUrlExpiryMinutes)}.");
+        }
+
+        // Production safety: Prevent LocalStack in production
+        if (UseLocalEmulator && 
+            !string.IsNullOrWhiteSpace(Environment) && 
+            Environment.Equals("Production", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GenesisConfigurationException(
+                "FileStorageOptions",
+                "LocalStack (UseLocalEmulator=true) cannot be enabled in Production environment. " +
+                "This configuration is only allowed in Development, Staging, or Test environments.");
         }
 
         if (MultipartUploadThresholdBytes < 5 * 1024 * 1024)
