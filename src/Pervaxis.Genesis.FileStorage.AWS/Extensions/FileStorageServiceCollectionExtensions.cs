@@ -20,8 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
-// TODO: Step 2 - Re-enable after S3FileStorageProvider is implemented
-// using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
+using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Extensions;
 
@@ -44,8 +43,7 @@ public static class FileStorageServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<FileStorageOptions>(configuration);
-        // TODO: Step 2 - Re-enable after S3FileStorageProvider is implemented
-        // services.AddSingleton<IFileStorage, S3FileStorageProvider>();
+        services.AddSingleton<IFileStorage, S3FileStorageProvider>();
 
         return services;
     }
@@ -64,8 +62,7 @@ public static class FileStorageServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        // TODO: Step 2 - Re-enable after S3FileStorageProvider is implemented
-        // services.AddSingleton<IFileStorage, S3FileStorageProvider>();
+        services.AddSingleton<IFileStorage, S3FileStorageProvider>();
 
         return services;
     }
