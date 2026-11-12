@@ -157,10 +157,11 @@ public sealed class TenantKeyResolverTests
         // Act
         var act = () => resolver.ResolveKey(encodedKey);
 
-        // Assert
+        // Assert - NOW REJECTS AT ENCODING CHECK (before traversal detection)
+        // This prevents silent key rewriting and data-integrity issues
         act.Should().Throw<GenesisException>()
-            .WithMessage("*path traversal*")
-            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyPathTraversal);
+            .WithMessage("*contains URL-encoded sequences*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -292,41 +293,25 @@ public sealed class TenantKeyResolverTests
     }
 
     [Theory]
-    [InlineData("report%20final.pdf")]     // Looks like URL-encoded space
-    [InlineData("file%2Ename.txt")]        // Looks like URL-encoded dot
-    public void ResolveKey_WithLiteralPercentInKey_GetsDecoded(string keyWithPercent)
+    [InlineData("report%20final.pdf")]     // URL-encoded space
+    [InlineData("file%2Ename.txt")]        // URL-encoded dot  
+    [InlineData("doc%2Fument.pdf")]        // URL-encoded slash
+    public void ResolveKey_WithPercentInKey_ThrowsGenesisException(string keyWithPercent)
     {
         // Arrange
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
 
-        // Act & Assert
-        // DOCUMENTED BEHAVIOR: Keys with literal % followed by hex digits
-        // are decoded by Uri.UnescapeDataString. This is a deliberate tradeoff:
-        // we reject ambiguous keys to prevent encoding-based path traversal.
-        //
-        // "report%20final.pdf" → decoded to → "report final.pdf"
-        // "file%2Ename.txt" → decoded to → "file.name.txt"
-        //
-        // If the decoded result is safe, it's accepted. If it creates a traversal
-        // pattern or invalid characters, it's rejected.
-        
-        try
-        {
-            var result = resolver.ResolveKey(keyWithPercent);
-            
-            // If it succeeded, verify it's within tenant scope
-            result.Should().StartWith("tenants/acme/");
-            
-            // The key has been decoded, which is expected behavior
-        }
-        catch (GenesisException ex)
-        {
-            // Also acceptable - the decoded result may be invalid
-            ex.ErrorCode.Should().BeOneOf(
-                FileStorageConstants.FailureReasons.KeyPathTraversal,
-                FileStorageConstants.FailureReasons.InvalidKeyFormat);
-        }
+        // Act
+        var act = () => resolver.ResolveKey(keyWithPercent);
+
+        // Assert - MUST reject to prevent data-integrity issues:
+        // - "report%20final.pdf" would silently become "report final.pdf" in S3
+        // - "a%20b" and "a b" would collide
+        // - "%2F" would create unexpected subdirectories
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*contains URL-encoded sequences*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
     [Fact]
@@ -336,13 +321,13 @@ public sealed class TenantKeyResolverTests
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
 
-        // Act - this will decode to "../secrets"
+        // Act - decodes to "../secrets" which would be path traversal
         var act = () => resolver.ResolveKey("..%2Fsecrets");
 
-        // Assert - should throw because decoded result is path traversal
+        // Assert - rejected because decoding changes the key (before traversal check)
         act.Should().Throw<GenesisException>()
-            .WithMessage("*path traversal*")
-            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyPathTraversal);
+            .WithMessage("*contains URL-encoded sequences*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -481,7 +466,6 @@ public sealed class TenantKeyResolverTests
     [Theory]
     [InlineData("../")]
     [InlineData("../../sensitive/")]
-    [InlineData("%2e%2e/")]
     public void ResolvePrefix_WithTraversalAttempt_ThrowsGenesisException(string maliciousPrefix)
     {
         // Arrange
@@ -495,6 +479,24 @@ public sealed class TenantKeyResolverTests
         act.Should().Throw<GenesisException>()
             .WithMessage("*path traversal*")
             .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyPathTraversal);
+    }
+
+    [Theory]
+    [InlineData("%2e%2e/")]
+    [InlineData("%2e%2e/files")]
+    public void ResolvePrefix_WithEncodedPrefix_ThrowsGenesisException(string encodedPrefix)
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Act
+        var act = () => resolver.ResolvePrefix(encodedPrefix);
+
+        // Assert - rejects at encoding check (not traversal check)
+        act.Should().Throw<GenesisException>()
+            .WithMessage("*contains URL-encoded sequences*")
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
     [Fact]
@@ -602,17 +604,17 @@ public sealed class TenantKeyResolverTests
         // Try various escape attempts
         var escapeAttempts = new[]
         {
-            "../../globex/secrets.txt",
-            "../../../tenants/globex/data.pdf",
-            "%2e%2e/globex/confidential.doc"
+            ("../../globex/secrets.txt", FileStorageConstants.FailureReasons.KeyPathTraversal),
+            ("../../../tenants/globex/data.pdf", FileStorageConstants.FailureReasons.KeyPathTraversal),
+            ("%2e%2e/globex/confidential.doc", FileStorageConstants.FailureReasons.InvalidKeyFormat) // Encoding rejected first
         };
 
         // Act & Assert
-        foreach (var attempt in escapeAttempts)
+        foreach (var (attempt, expectedError) in escapeAttempts)
         {
             var act = () => resolver.ResolveKey(attempt);
             act.Should().Throw<GenesisException>()
-                .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.KeyPathTraversal,
+                .Where(ex => ex.ErrorCode == expectedError,
                     $"Escape attempt should be blocked: {attempt}");
         }
     }
@@ -908,7 +910,6 @@ public sealed class TenantKeyResolverTests
     [InlineData("..")]
     [InlineData("../")]
     [InlineData("../other")]
-    [InlineData("%2e%2e/files")]
     public void ResolvePrefix_WithTraversalPrefix_Throws(string traversalPrefix)
     {
         // Arrange
@@ -973,77 +974,115 @@ public sealed class TenantKeyResolverTests
     // CRITICAL TEST 19: Property-Based Random String Tests
     // ═══════════════════════════════════════════════════════════════════════
 
-    [Theory]
-    [InlineData("../random/../path")]
-    [InlineData("%2e%2e/attempt")]
-    [InlineData("valid/path/../../escape")]
-    [InlineData("...")]
-    [InlineData("a/../b")]
-    public void ResolveKey_WithRandomTraversalStrings_AlwaysThrowsOrStaysInPrefix(string randomKey)
-    {
-        // Arrange
-        var mockContext = CreateMockTenantContext("acme");
-        var resolver = CreateResolver(mockContext.Object);
-
-        // Act & Assert: Either throws or returns a key within tenant prefix
-        try
-        {
-            var result = resolver.ResolveKey(randomKey);
-            
-            // If it didn't throw, it MUST start with tenant prefix
-            result.Should().StartWith("tenants/acme/");
-            
-            // And MUST NOT contain .. segments
-            var segments = result.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            segments.Should().NotContain("..");
-        }
-        catch (GenesisException ex)
-        {
-            // Expected for invalid keys
-            ex.ErrorCode.Should().BeOneOf(
-                FileStorageConstants.FailureReasons.KeyPathTraversal,
-                FileStorageConstants.FailureReasons.InvalidKeyFormat);
-        }
-    }
-
     [Fact]
-    public void ResolveKey_WithLongRandomString_HandlesCorrectly()
+    public void ResolveKey_WithDangerousFragmentCombinations_AlwaysThrowsOrStaysInPrefix()
     {
         // Arrange
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
         var random = new Random(42); // Seeded for reproducibility
 
-        // Generate 100 random keys
-        for (int i = 0; i < 100; i++)
+        // Pool of dangerous fragments that should trigger validation
+        var dangerousFragments = new[]
         {
-            var length = random.Next(1, 1100); // Some over limit
-            var chars = new char[length];
-            for (int j = 0; j < length; j++)
-            {
-                chars[j] = (char)random.Next(33, 126); // Printable ASCII
-            }
-            var randomKey = new string(chars);
+            "..", ".", "/", "\\", 
+            "%2e", "%2E", "%25", "%252e", "%252E",
+            "\uFF0F", "\uFF0E",  // Fullwidth slash and dot
+            "%00", "\x00",        // Null byte
+            "../", ".\\",
+            ".../"
+        };
 
-            // Act & Assert: Either throws or stays in tenant scope
+        // Generate 1000 random keys from dangerous fragments
+        for (int i = 0; i < 1000; i++)
+        {
+            var fragmentCount = random.Next(1, 6); // 1-5 fragments per key
+            var keyParts = new List<string>();
+            
+            for (int j = 0; j < fragmentCount; j++)
+            {
+                keyParts.Add(dangerousFragments[random.Next(dangerousFragments.Length)]);
+            }
+            
+            var randomKey = string.Join("", keyParts);
+
+            // Act & Assert: Either throws or returns safe key in tenant scope
             try
             {
                 var result = resolver.ResolveKey(randomKey);
-                result.Should().StartWith("tenants/acme/");
                 
-                // Check byte length
-                var byteCount = System.Text.Encoding.UTF8.GetByteCount(result);
-                byteCount.Should().BeLessOrEqualTo(1024);
+                // If it didn't throw, verify safety invariants:
+                result.Should().StartWith("tenants/acme/", $"random key: {randomKey}");
+                
+                // MUST NOT contain .. segments
+                var segments = result.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                segments.Should().NotContain("..", $"random key: {randomKey}");
+                
+                // Should not contain null bytes
+                result.Should().NotContain("\x00", $"random key: {randomKey}");
             }
-            catch (GenesisException)
+            catch (GenesisException ex)
             {
-                // Expected for invalid/too-long keys
+                // Expected for invalid keys
+                ex.ErrorCode.Should().BeOneOf(
+                    FileStorageConstants.FailureReasons.KeyPathTraversal,
+                    FileStorageConstants.FailureReasons.InvalidKeyFormat,
+                    FileStorageConstants.FailureReasons.TenantContextNotResolved);
             }
             catch (ArgumentException)
             {
-                // Expected for empty/whitespace
+                // Expected for empty/whitespace keys
             }
         }
+    }
+
+    [Fact]
+    public void ResolveKey_With10LevelEncoding_RejectedForEncoding()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Encode "../" exactly 10 times (creates 10 encoding layers)
+        var key = "../";
+        for (int i = 0; i < 10; i++)
+        {
+            key = Uri.EscapeDataString(key);
+        }
+        
+        // After 10 encodings: ../ → ..%2F → ..%252F → ..%25252F → ... (10 levels)
+        // This requires 10 decode iterations to reach "../", which is within our limit
+        // But we reject it because decoding changes the key (data integrity)
+
+        // Act & Assert
+        var act = () => resolver.ResolveKey(key);
+        
+        // Could fail for either reason depending on implementation:
+        // 1. "Excessive encoding" if it hits iteration limit
+        // 2. "contains URL-encoded sequences" if it stabilizes but has encoding
+        act.Should().Throw<GenesisException>()
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
+    }
+
+    [Fact]
+    public void ResolveKey_With11LevelEncoding_RejectedForExcessiveEncoding()
+    {
+        // Arrange
+        var mockContext = CreateMockTenantContext("acme");
+        var resolver = CreateResolver(mockContext.Object);
+
+        // Encode "../" exactly 11 times (creates nested encoding)
+        var key = "../";
+        for (int i = 0; i < 11; i++)
+        {
+            key = Uri.EscapeDataString(key);
+        }
+
+        // Act & Assert
+        // After 11 encodings, it won't stabilize within 10 iterations
+        var act = () => resolver.ResolveKey(key);
+        act.Should().Throw<GenesisException>()
+            .Where(ex => ex.ErrorCode == FileStorageConstants.FailureReasons.InvalidKeyFormat);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

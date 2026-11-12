@@ -54,11 +54,18 @@ namespace Pervaxis.Genesis.FileStorage.AWS.Security;
 /// 4. Migration: If migrating existing files, normalize all keys to FormC first.
 /// 
 /// LITERAL % CHARACTER RESTRICTION:
-/// Keys containing literal % characters followed by hex digits (e.g., "report%20final.pdf")
-/// will be rejected if they look like URL-encoded patterns. This is a deliberate security
-/// tradeoff to prevent encoding-based path traversal attacks. Use alternative naming:
+/// Keys containing % followed by hex digits (e.g., "report%20final.pdf") are REJECTED.
+/// This prevents data-integrity issues:
+/// - Silent key rewriting: "report%20final.pdf" would become "report final.pdf" in S3
+/// - Key collisions: "a%20b" and "a b" would collide
+/// - Subfolder injection: "%2F" would create unexpected subdirectories
+/// 
+/// The resolver decodes keys to detect encoding attacks, but rejects any key where
+/// decoding changes it. This ensures the key sent to S3 is exactly what the caller provided.
+/// 
+/// Use alternative naming:
 /// - "report_20_final.pdf" or "report-20-final.pdf" instead of "report%20final.pdf"
-/// - Avoid % followed by two hex digits in filenames
+/// - Avoid % followed by two hex digits ([0-9A-Fa-f]) in filenames
 /// 
 /// Phase 1 = Application-enforced isolation only. IAM policies come in Phase 2.
 /// </remarks>
@@ -142,9 +149,31 @@ public sealed class TenantKeyResolver
                 throw new GenesisException(nameof(TenantKeyResolver), $"Invalid tenant ID format: {validationResult.ErrorMessage}", FileStorageConstants.FailureReasons.InvalidTenantId, null);
             }
 
-            // URL decode until stable, then normalize and validate
+            // URL decode to detect encoding attacks, but reject if it changes the key
+            // This prevents silent key rewriting (report%20final.pdf → report final.pdf)
+            // and collisions (a%20b vs a b, or %2F creating subfolders)
             var decodedKey = UrlDecodeUntilStable(userKey);
-            var normalizedKey = NormalizeKey(decodedKey);
+            
+            // SECURITY: Reject keys where decoding changes them
+            // If caller sends "report%20final.pdf", they expect that literal key in S3
+            // Decoding it would silently rewrite to "report final.pdf" (data integrity issue)
+            if (decodedKey != userKey)
+            {
+                _logger.LogWarning(
+                    "Key contains URL-encoded sequences. Original: {OriginalKey}, Decoded: {DecodedKey}",
+                    userKey,
+                    decodedKey);
+
+                throw new GenesisException(
+                    nameof(TenantKeyResolver),
+                    $"Key '{userKey}' contains URL-encoded sequences (decoded to '{decodedKey}'). " +
+                    "S3 keys must not contain % followed by hex digits. Use alternative naming like 'report_20_final.pdf' instead of 'report%20final.pdf'.",
+                    FileStorageConstants.FailureReasons.InvalidKeyFormat,
+                    null);
+            }
+            
+            // Now normalize and validate the ORIGINAL key (not the decoded one)
+            var normalizedKey = NormalizeKey(userKey);
             ValidateKeyFormat(normalizedKey);
 
             // Build full key: tenants/{tenantId}/{normalizedKey}
@@ -180,6 +209,24 @@ public sealed class TenantKeyResolver
         }
 
         // Tenant isolation disabled (only allowed in Development/Test)
+        // Still apply the same validation to prevent encoding attacks
+        var decodedKeyNonTenant = UrlDecodeUntilStable(userKey);
+        
+        if (decodedKeyNonTenant != userKey)
+        {
+            _logger.LogWarning(
+                "Key contains URL-encoded sequences. Original: {OriginalKey}, Decoded: {DecodedKey}",
+                userKey,
+                decodedKeyNonTenant);
+
+            throw new GenesisException(
+                nameof(TenantKeyResolver),
+                $"Key '{userKey}' contains URL-encoded sequences (decoded to '{decodedKeyNonTenant}'). " +
+                "S3 keys must not contain % followed by hex digits. Use alternative naming like 'report_20_final.pdf' instead of 'report%20final.pdf'.",
+                FileStorageConstants.FailureReasons.InvalidKeyFormat,
+                null);
+        }
+        
         var nonTenantKey = NormalizeKey(userKey);
         ValidateKeyFormat(nonTenantKey);
         ValidateKeyLength(nonTenantKey);
@@ -225,9 +272,26 @@ public sealed class TenantKeyResolver
                 return tenantPrefix;
             }
 
-            // URL decode and normalize the user prefix
+            // URL decode to detect encoding attacks
             var decodedPrefix = UrlDecodeUntilStable(userPrefix);
-            var normalizedPrefix = NormalizeKey(decodedPrefix);
+            
+            // Reject if decoding changes the prefix (same data-integrity rule as ResolveKey)
+            if (decodedPrefix != userPrefix)
+            {
+                _logger.LogWarning(
+                    "Prefix contains URL-encoded sequences. Original: {OriginalPrefix}, Decoded: {DecodedPrefix}",
+                    userPrefix,
+                    decodedPrefix);
+
+                throw new GenesisException(
+                    nameof(TenantKeyResolver),
+                    $"Prefix '{userPrefix}' contains URL-encoded sequences. Use literal characters instead.",
+                    FileStorageConstants.FailureReasons.InvalidKeyFormat,
+                    null);
+            }
+            
+            // Normalize the ORIGINAL prefix (not the decoded one)
+            var normalizedPrefix = NormalizeKey(userPrefix);
             
             // Restore trailing slash if the original user prefix had one
             // (NormalizeKey removes it, but prefixes need it for S3 list operations)
@@ -284,6 +348,23 @@ public sealed class TenantKeyResolver
         if (string.IsNullOrWhiteSpace(userPrefix))
         {
             return string.Empty;
+        }
+
+        // Still validate encoding for data integrity
+        var decodedPrefixNonTenant = UrlDecodeUntilStable(userPrefix);
+        
+        if (decodedPrefixNonTenant != userPrefix)
+        {
+            _logger.LogWarning(
+                "Prefix contains URL-encoded sequences. Original: {OriginalPrefix}, Decoded: {DecodedPrefix}",
+                userPrefix,
+                decodedPrefixNonTenant);
+
+            throw new GenesisException(
+                nameof(TenantKeyResolver),
+                $"Prefix '{userPrefix}' contains URL-encoded sequences. Use literal characters instead.",
+                FileStorageConstants.FailureReasons.InvalidKeyFormat,
+                null);
         }
 
         var nonTenantPrefix = NormalizeKey(userPrefix);
@@ -373,22 +454,21 @@ public sealed class TenantKeyResolver
 
     /// <summary>
     /// URL-decodes a string until it reaches a stable state (no more %XX sequences).
-    /// Protects against double/triple encoding attacks (%252e%252e → %2e%2e → ..).
+    /// Used to detect encoding-based attacks (e.g., %252e%252e → %2e%2e → ..).
     /// Uses Uri.UnescapeDataString to preserve + characters (only decodes %XX).
     /// </summary>
     /// <remarks>
-    /// SECURITY: This method rejects keys that don't stabilize within MaxIterations.
-    /// If a key is still changing after 10 decode passes, it's considered suspicious
-    /// and is rejected to prevent resource exhaustion attacks.
+    /// SECURITY: This method is used for DETECTION only, not rewriting.
+    /// The decoded result is compared to the original. If they differ, the key is REJECTED.
     /// 
-    /// IMPORTANT: This means keys with literal % characters (e.g., "report%20final.pdf")
-    /// will be rejected if they contain patterns that look like URL encoding.
-    /// S3 does NOT decode keys server-side, so this is a deliberate security tradeoff:
-    /// we reject ambiguous keys to prevent traversal attacks via encoding tricks.
+    /// This prevents:
+    /// - Silent key rewriting ("report%20final.pdf" → "report final.pdf")
+    /// - Key collisions ("a%20b" vs "a b")
+    /// - Subfolder injection ("%2F" creating unexpected directories)
+    /// - Path traversal via encoding ("..%2Fsecrets" → "../secrets")
     /// 
-    /// If your application needs literal % in filenames, consider alternative naming:
-    /// - Use different separators: "report_20_final.pdf" or "report-20-final.pdf"
-    /// - Avoid % followed by hex digits in filenames
+    /// If a key doesn't stabilize within MaxIterations, it's rejected to prevent
+    /// resource exhaustion attacks.
     /// </remarks>
     private string UrlDecodeUntilStable(string input)
     {
