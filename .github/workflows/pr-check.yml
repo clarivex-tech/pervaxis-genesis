@@ -4,11 +4,15 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+  packages: read
+
 env:
   DOTNET_NOLOGO: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
-  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
+  NUGET_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_PAT }}
   GITHUB_PACKAGES_PAT: ${{ secrets.GH_PACKAGES_PAT }}
 
 jobs:

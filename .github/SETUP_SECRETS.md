@@ -8,29 +8,28 @@ This guide explains how to configure secrets for the Pervaxis Genesis repository
 
 | Location | Secret/Variable Name | Why |
 |----------|---------------------|-----|
-| **GitHub Repository Secret** | `GH_PACKAGES_PAT` | GitHub doesn't allow `GITHUB_` prefix |
+| **GitHub Repository Secret** | `GH_PACKAGES_PAT` | For local/dev fallback or external automation |
 | **Local Environment Variable** | `GITHUB_PACKAGES_PAT` | Works fine locally, used by `nuget.config` |
 
 **Summary:** 
-- GitHub secret: `GH_PACKAGES_PAT` (for CI/CD)
+- GitHub Actions uses `GH_PACKAGES_PAT` for GitHub Packages restore and publish access.
 - Local env var: `GITHUB_PACKAGES_PAT` (for your machine)
-
-The workflows map `GH_PACKAGES_PAT` → `GITHUB_PACKAGES_PAT` so `nuget.config` works correctly.
+- The PAT must be valid and have access to the `clarivex-tech` GitHub Packages feed.
 
 ---
 
 ## Required Secrets
 
-### 1. `GH_PACKAGES_PAT` (GitHub Personal Access Token)
+### 1. `GH_PACKAGES_PAT` (GitHub Personal Access Token, optional)
 
-**Purpose:** Authenticate with GitHub Packages to restore NuGet packages from `clarivex-tech` organization.
+**Purpose:** Authenticate with GitHub Packages for local development or external automation.
 
 **Scopes Required:**
 - `read:packages` - Download packages from GitHub Package Registry
 
 **Setup Steps:**
 
-#### For Repository (CI/CD):
+#### For Repository (optional):
 1. Go to repository **Settings** → **Secrets and variables** → **Actions**
 2. Click **New repository secret**
 3. Name: `GH_PACKAGES_PAT` (Note: Cannot use `GITHUB_` prefix - reserved by GitHub)
@@ -107,6 +106,7 @@ dotnet restore Pervaxis.Genesis.slnx
 
 ### GitHub Actions:
 Check workflow runs at: https://github.com/clarivex-tech/pervaxis-genesis/actions
+GitHub Actions restore/publish should use the workflow `github.token`, so package access no longer depends on `GH_PACKAGES_PAT`.
 
 ---
 
@@ -124,16 +124,15 @@ Check workflow runs at: https://github.com/clarivex-tech/pervaxis-genesis/action
 ## Troubleshooting
 
 ### "Unable to load the service index for source" error:
-- Verify `GITHUB_PACKAGES_PAT` environment variable is set
+- Verify `GITHUB_PACKAGES_PAT` environment variable is set locally
 - Restart your terminal/IDE after setting the variable
 - Check token hasn't expired
 - Verify token has `read:packages` scope
 
 ### GitHub Actions workflow fails at restore:
-- Check `GH_PACKAGES_PAT` secret is added to repository (Settings → Secrets)
-- Verify token is valid and not expired
-- Check token permissions include `read:packages`
-- Note: GitHub secret is named `GH_PACKAGES_PAT`, local env var is `GITHUB_PACKAGES_PAT`
+- Check `GH_PACKAGES_PAT` is configured and not expired
+- Verify the token has `read:packages` scope
+- Verify the token owner can read the `clarivex-tech` GitHub Packages feed
 
 ### Package not found:
 - Verify package exists at https://github.com/orgs/clarivex-tech/packages

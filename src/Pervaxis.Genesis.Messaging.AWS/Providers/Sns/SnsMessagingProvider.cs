@@ -16,6 +16,7 @@
  ************************************************************************
  */
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
@@ -32,6 +33,7 @@ using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
+using Pervaxis.Genesis.Messaging.AWS.Caching;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sns;
@@ -55,6 +57,11 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
+    private readonly TimeProvider _timeProvider;
+
+    // ARN cache: thread-safe, keyed by (destination, tenant, scope)
+    // Entries expire after configured TTL to prevent unbounded growth
+    private readonly ConcurrentDictionary<MessagingResourceCacheKey, MessagingResourceCacheEntry> _arnCache = new();
 
     // Metrics (shared with SQS via static fields)
     private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
@@ -72,16 +79,35 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         "ms",
         "Duration of messaging operations in milliseconds");
 
+    private static readonly Counter<long> _cacheHits = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.cache.hits",
+        "1",
+        "Number of cache hits for ARN resolution");
+
+    private static readonly Counter<long> _cacheMisses = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.cache.misses",
+        "1",
+        "Number of cache misses for ARN resolution");
+
+    private static readonly Counter<long> _cacheInvalidations = PervaxisMeter.CreateCounter<long>(
+        "genesis.messaging.cache.invalidations",
+        "1",
+        "Number of cache invalidations due to not-found errors");
+
     /// <summary>
     /// Initializes a new instance of <see cref="SnsMessagingProvider"/> for production use.
     /// </summary>
     /// <param name="options">Messaging configuration options.</param>
     /// <param name="logger">Logger instance.</param>
     /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
+    /// <param name="environment">Optional environment name for validation (defaults to Production).</param>
+    /// <param name="timeProvider">Optional time provider for testing (defaults to system time).</param>
     public SnsMessagingProvider(
         IOptions<MessagingOptions> options,
         ILogger<SnsMessagingProvider> logger,
-        ITenantContext? tenantContext = null)
+        ITenantContext? tenantContext = null,
+        string? environment = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -89,8 +115,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions();
+        ValidateOptions(environment);
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateClient);
         _jsonOptions = BuildJsonOptions();
@@ -114,7 +141,8 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         IOptions<MessagingOptions> options,
         ILogger<SnsMessagingProvider> logger,
         IAmazonSimpleNotificationService snsClient,
-        ITenantContext? tenantContext = null)
+        ITenantContext? tenantContext = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -123,8 +151,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions();
+        ValidateOptions("Test"); // Internal constructor always allows disabled isolation
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => snsClient);
         _jsonOptions = BuildJsonOptions();
@@ -158,7 +187,8 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             var request = new PublishRequest
             {
                 TopicArn = topicArn,
-                Message = body
+                Message = body,
+                MessageAttributes = new Dictionary<string, MessageAttributeValue>()
             };
 
             AddTenantAttributes(request.MessageAttributes);
@@ -179,30 +209,48 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
             return response.MessageId;
         }
+        catch (NotFoundException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SNS topic {TopicArn} does not exist. Resource must be provisioned.", topicArn);
+
+            // Invalidate cache on not-found error
+            InvalidateTopicCache(destination, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("publish", "error", "sns");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                $"Topic '{topicArn}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "TOPIC_NOT_FOUND",
+                new Dictionary<string, object> { ["TopicArn"] = topicArn });
+        }
+        catch (Exception ex) when (ex is AuthorizationErrorException or ThrottledException)
+        {
+            // Pass through access denied and throttling unchanged for IAM policy detection
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to publish message to SNS topic {TopicArn}", topicArn);
+            _logger.LogError(ex, "SNS publish operation failed");
 
-            var tags = GetMetricTags("publish", "error", "sns");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("publish", "error", "sns");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SnsMessagingProvider), "SNS publish operation failed", ex);
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                "SNS publish operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -242,7 +290,8 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                         var entry = new PublishBatchRequestEntry
                         {
                             Id = idx.ToString(CultureInfo.InvariantCulture),
-                            Message = Serialize(msg)
+                            Message = Serialize(msg),
+                            MessageAttributes = new Dictionary<string, MessageAttributeValue>()
                         };
                         AddTenantAttributes(entry.MessageAttributes);
                         return entry;
@@ -283,30 +332,47 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
             return allMessageIds;
         }
+        catch (NotFoundException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SNS topic {TopicArn} does not exist. Resource must be provisioned.", topicArn);
+
+            // Invalidate cache on not-found error
+            InvalidateTopicCache(destination, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("publish_batch", "error", "sns");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                $"Topic '{topicArn}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "TOPIC_NOT_FOUND",
+                new Dictionary<string, object> { ["TopicArn"] = topicArn });
+        }
+        catch (Exception ex) when (ex is AuthorizationErrorException or ThrottledException)
+        {
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to publish batch to SNS topic {TopicArn}", topicArn);
+            _logger.LogError(ex, "SNS batch publish operation failed");
 
-            var tags = GetMetricTags("publish_batch", "error", "sns");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("publish_batch", "error", "sns");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SnsMessagingProvider), "SNS batch publish operation failed", ex);
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                "SNS batch publish operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -365,7 +431,12 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             {
                 TopicArn = topicArn,
                 Protocol = protocol,
-                Endpoint = endpoint
+                Endpoint = endpoint,
+                // Enable raw message delivery for SQS subscriptions (Phase 1 requirement)
+                // This ensures message attributes (including pervaxis_tenant_id) are passed through
+                Attributes = protocol == "sqs"
+                    ? new Dictionary<string, string> { ["RawMessageDelivery"] = "true" }
+                    : new Dictionary<string, string>()
             };
 
             var response = await _resiliencePipeline.ExecuteAsync(
@@ -374,8 +445,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
             activity?.SetTag("messaging.subscription_arn", response.SubscriptionArn);
             _logger.LogInformation(
-                "Subscribed endpoint {Endpoint} to SNS topic {TopicArn} (SubscriptionArn={SubscriptionArn})",
-                endpoint, topicArn, response.SubscriptionArn);
+                "Subscribed endpoint {Endpoint} to SNS topic {TopicArn} with protocol {Protocol} " +
+                "(SubscriptionArn={SubscriptionArn}, RawMessageDelivery={RawDelivery})",
+                endpoint, topicArn, protocol, response.SubscriptionArn, protocol == "sqs");
 
             var tags = GetMetricTags("subscribe", "success", "sns");
             _operationsCounter.Add(1, tags);
@@ -383,30 +455,47 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
             return response.SubscriptionArn;
         }
+        catch (NotFoundException ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            _logger.LogError(ex, "SNS topic {TopicArn} does not exist. Resource must be provisioned.", topicArn);
+
+            // Invalidate cache on not-found error
+            InvalidateTopicCache(topic, MessageScope.Tenant);
+
+            var errorTags = GetMetricTags("subscribe", "error", "sns");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
+
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                $"Topic '{topicArn}' not provisioned. Ensure tenant messaging resources are created before use.",
+                ex,
+                "TOPIC_NOT_FOUND",
+                new Dictionary<string, object> { ["TopicArn"] = topicArn });
+        }
+        catch (Exception ex) when (ex is AuthorizationErrorException or ThrottledException)
+        {
+            throw;
+        }
+        catch (GenesisException)
+        {
+            // Pass through Genesis exceptions without wrapping
+            throw;
+        }
         catch (Exception ex)
         {
-            if (ex is GenesisException gex)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, gex.Message);
-                activity?.SetTag("exception.id", gex.ExceptionId);
-                activity?.SetTag("exception.provider", gex.ProviderName);
-                if (!string.IsNullOrWhiteSpace(gex.ErrorCode))
-                {
-                    activity?.SetTag("exception.error_code", gex.ErrorCode);
-                }
-
-                _logger.LogError(gex, "Provider {ProviderName} error {ExceptionId}", gex.ProviderName, gex.ExceptionId);
-                throw;
-            }
-
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "Failed to subscribe {Endpoint} to SNS topic {TopicArn}", endpoint, topicArn);
+            _logger.LogError(ex, "SNS subscribe operation failed");
 
-            var tags = GetMetricTags("subscribe", "error", "sns");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
+            var errorTags = GetMetricTags("subscribe", "error", "sns");
+            _operationsCounter.Add(1, errorTags);
+            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
 
-            throw new GenesisException(nameof(SnsMessagingProvider), "SNS subscribe operation failed", ex);
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                "SNS subscribe operation failed. See inner exception for details.",
+                ex);
         }
     }
 
@@ -422,13 +511,33 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         }
     }
 
-    private void ValidateOptions()
+    private void ValidateOptions(string? environment = null)
     {
         if (!_options.Validate())
         {
             throw new GenesisConfigurationException(
                 nameof(SnsMessagingProvider),
                 "Invalid messaging configuration");
+        }
+
+        // SECURITY: Tenant isolation can ONLY be disabled in Development and Test environments (allow-list)
+        if (!_options.EnableTenantIsolation)
+        {
+            var env = environment ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? string.Empty;
+            
+            // Allow-list: only Development and Test can disable isolation
+            var isAllowed = env.Equals("Development", StringComparison.OrdinalIgnoreCase) ||
+                           env.Equals("Test", StringComparison.OrdinalIgnoreCase);
+            
+            if (!isAllowed)
+            {
+                // Fail closed: missing env or any non-allowed environment is rejected
+                var envDisplay = string.IsNullOrEmpty(env) ? "(not set)" : env;
+                throw new GenesisConfigurationException(
+                    nameof(SnsMessagingProvider),
+                    $"Tenant isolation cannot be disabled in environment '{envDisplay}'. " +
+                    "EnableTenantIsolation=false is ONLY allowed in 'Development' or 'Test' environments.");
+            }
         }
     }
 
@@ -450,14 +559,205 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
     private string ResolveTopicArn(string destination)
     {
+        return ResolveTopicArn(destination, MessageScope.Tenant);
+    }
+
+    /// <summary>
+    /// Resolves topic ARN with tenant isolation support and caching.
+    /// SECURITY: Never trusts external tenant ID - always resolves from ITenantContext.
+    /// Cache key includes (destination, tenantId, scope) to prevent cross-tenant leakage.
+    /// Tenant IDs are normalized to lowercase to prevent duplicate entries.
+    /// </summary>
+    private string ResolveTopicArn(string destination, MessageScope scope)
+    {
+        // Caching disabled if TTL is zero
+        if (_options.CacheTtl == TimeSpan.Zero)
+        {
+            return ResolveTopicArnInternal(destination, scope);
+        }
+
+        // Build cache key: (destination, tenant, scope) with normalized tenant ID
+        var tenantId = scope == MessageScope.Tenant && _tenantContext?.IsResolved == true
+            ? _tenantContext.TenantId.Value
+            : string.Empty;
+        
+        var cacheKey = new MessagingResourceCacheKey(destination, tenantId, scope);
+
+        // Try cache first - check if entry exists and is not expired
+        if (_arnCache.TryGetValue(cacheKey, out var cachedEntry))
+        {
+            if (!cachedEntry.IsExpired())
+            {
+                cachedEntry.Touch(); // Update last accessed time for LRU
+                _cacheHits.Add(1, new TagList { { "resource_type", "topic" } });
+                _logger.LogDebug("Cache hit for topic ARN: {Destination} (tenant: {TenantId}, scope: {Scope})",
+                    destination, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope);
+                return cachedEntry.Value;
+            }
+
+            // Entry expired - remove it
+            _arnCache.TryRemove(cacheKey, out _);
+            _logger.LogDebug("Expired cache entry removed for topic: {Destination} (tenant: {TenantId}, scope: {Scope})",
+                destination, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope);
+        }
+
+        _cacheMisses.Add(1, new TagList { { "resource_type", "topic" } });
+
+        // Cache miss or expired - resolve the ARN
+        var resolvedArn = ResolveTopicArnInternal(destination, scope);
+
+        // Cache the resolved ARN with TTL
+        var entry = new MessagingResourceCacheEntry(resolvedArn, _options.CacheTtl, _timeProvider);
+        _arnCache.TryAdd(cacheKey, entry);
+
+        // Evict LRU entries if cache size exceeds max
+        if (_options.MaxCacheSize > 0 && _arnCache.Count > _options.MaxCacheSize)
+        {
+            EvictLruEntries(_arnCache, _options.MaxCacheSize);
+        }
+        
+        _logger.LogDebug("Resolved and cached topic ARN: {Destination} → {Arn} (tenant: {TenantId}, scope: {Scope}, TTL: {Ttl})",
+            destination, resolvedArn, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope, _options.CacheTtl);
+
+        return resolvedArn;
+    }
+
+    /// <summary>
+    /// Internal method to resolve topic ARN without caching.
+    /// Separated from caching logic for clarity and testability.
+    /// Phase 1: Uses shared topics with message-attribute based tenant isolation.
+    /// Per-tenant resources (separate topics per tenant) are not yet implemented.
+    /// </summary>
+    private string ResolveTopicArnInternal(string destination, MessageScope scope)
+    {
+        // First check if there's an explicit mapping (for backward compatibility)
         if (_options.Sns.TopicArnMappings.TryGetValue(destination, out var mappedArn))
         {
             return mappedArn;
         }
 
-        return string.IsNullOrWhiteSpace(_options.Sns.DefaultTopicArn)
-            ? destination
-            : _options.Sns.DefaultTopicArn;
+        // Phase 1: Shared topic model - all tenants use the same physical topic
+        // Tenant isolation is enforced via message attributes (pervaxis_tenant_id)
+        // TODO Phase 2: Add SharedTopicNameFormat to SnsOptions (currently using TenantTopicNameTemplate as default)
+        string topicName = _options.Sns.TenantTopicNameTemplate
+            .Replace("{topicName}", destination, StringComparison.Ordinal)
+            .Replace("{tenantId}", "shared", StringComparison.Ordinal); // Temporary: use "shared" suffix
+
+        _logger.LogDebug(
+            "Resolved topic name (shared model): {Destination} → {TopicName}",
+            destination, topicName);
+
+        // If topic name looks like a full ARN, return it as-is
+        string resolvedArn;
+        if (topicName.StartsWith("arn:aws:sns:", StringComparison.OrdinalIgnoreCase))
+        {
+            resolvedArn = topicName;
+        }
+        // Otherwise, construct topic ARN from topic name
+        // Format: arn:aws:sns:{region}:{accountId}:{topicName}
+        else if (!string.IsNullOrWhiteSpace(_options.Sns.DefaultTopicArn))
+        {
+            // Replace the topic name in default ARN
+            var baseArn = _options.Sns.DefaultTopicArn;
+            var lastColon = baseArn.LastIndexOf(':');
+            if (lastColon > 0)
+            {
+                resolvedArn = baseArn[..lastColon] + ":" + topicName;
+            }
+            else
+            {
+                resolvedArn = topicName; // Fallback
+            }
+        }
+        else
+        {
+            // Fallback: return topic name (works with LocalStack)
+            resolvedArn = topicName;
+        }
+
+        return resolvedArn;
+    }
+
+    /// <summary>
+    /// Invalidates the cache for a specific topic ARN after a not-found error.
+    /// </summary>
+    private void InvalidateTopicCache(string destination, MessageScope scope)
+    {
+        var tenantId = scope == MessageScope.Tenant && _tenantContext?.IsResolved == true
+            ? _tenantContext.TenantId.Value
+            : string.Empty;
+        
+        var cacheKey = new MessagingResourceCacheKey(destination, tenantId, scope);
+
+        if (_arnCache.TryRemove(cacheKey, out _))
+        {
+            _cacheInvalidations.Add(1, new TagList { { "resource_type", "topic" } });
+            _logger.LogInformation("Invalidated cache for topic: {Destination} (tenant: {TenantId}, scope: {Scope})",
+                destination, string.IsNullOrEmpty(tenantId) ? "none" : tenantId, scope);
+        }
+    }
+
+    /// <summary>
+    /// Evicts least recently used entries when cache size exceeds maximum.
+    /// Removes 10% of entries (sorted by LastAccessedAt) to reduce thrashing.
+    /// THREAD-SAFE: Snapshot is taken before eviction to avoid concurrent modification issues.
+    /// Only removes entries that are still old after snapshot to avoid removing just-added entries.
+    /// 
+    /// NOTE: The 1-second recently-added protection window allows cache to temporarily exceed max size
+    /// under high burst load. This is by design - prevents race conditions where just-added entries
+    /// are immediately evicted. Cache will shrink below max size once entries age past 1 second.
+    /// </summary>
+    private void EvictLruEntries(
+        ConcurrentDictionary<MessagingResourceCacheKey, MessagingResourceCacheEntry> cache,
+        int maxSize)
+    {
+        var currentSize = cache.Count;
+        if (currentSize <= maxSize)
+        {
+            return;
+        }
+
+        // Remove 10% of entries to avoid frequent evictions
+        var targetRemoveCount = Math.Max(1, currentSize / 10);
+
+        // SAFETY: Take snapshot of entries to avoid enumeration issues under concurrent access
+        // ToArray() creates a defensive copy so concurrent modifications won't throw
+        var snapshot = cache.ToArray();
+
+        // Sort by LastAccessedAt and take oldest entries from snapshot
+        var entriesToRemove = snapshot
+            .OrderBy(kvp => kvp.Value.LastAccessedAt)
+            .Take(targetRemoveCount)
+            .ToList();
+
+        var removedCount = 0;
+        var now = _timeProvider.GetUtcNow();
+
+        foreach (var kvp in entriesToRemove)
+        {
+            // SAFETY: Double-check the entry is still old before removing
+            // This prevents removing entries that were just added or accessed by another thread
+            if (cache.TryGetValue(kvp.Key, out var currentEntry))
+            {
+                // Only remove if entry hasn't been accessed recently (within last second)
+                var timeSinceLastAccess = now - currentEntry.LastAccessedAt;
+                if (timeSinceLastAccess.TotalSeconds >= 1.0)
+                {
+                    // TryRemove on ConcurrentDictionary never throws
+                    if (cache.TryRemove(kvp.Key, out _))
+                    {
+                        removedCount++;
+                    }
+                }
+            }
+        }
+
+        if (removedCount > 0)
+        {
+            _logger.LogInformation(
+                "Evicted {Count} LRU cache entries (cache size: {CurrentSize} → {NewSize}, max: {MaxSize})",
+                removedCount, currentSize, cache.Count, maxSize);
+        }
     }
 
     private static string InferProtocol(string endpoint)
@@ -495,13 +795,60 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
     private void AddTenantAttributes(Dictionary<string, MessageAttributeValue> attributes)
     {
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        // SECURITY: First, reject any caller-supplied reserved attributes (pervaxis_* prefix)
+        // This prevents callers from spoofing tenant IDs or other platform-controlled metadata
+        var reservedKeys = attributes.Keys
+            .Where(k => k.StartsWith(MessagingConstants.ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (reservedKeys.Count > 0)
         {
-            attributes["TenantId"] = new MessageAttributeValue
+            _logger.LogError(
+                "Caller attempted to supply reserved message attributes: {ReservedKeys}. " +
+                "Attributes with prefix '{Prefix}' are platform-controlled and will be rejected.",
+                string.Join(", ", reservedKeys),
+                MessagingConstants.ReservedAttributePrefix);
+
+            throw new GenesisException(
+                nameof(SnsMessagingProvider),
+                $"Reserved message attributes cannot be set by callers. " +
+                $"The following reserved attributes were rejected: {string.Join(", ", reservedKeys)}. " +
+                $"Attributes prefixed with '{MessagingConstants.ReservedAttributePrefix}' are platform-controlled.",
+                MessagingConstants.FailureReasons.ReservedAttributeSupplied,
+                new Dictionary<string, object>
+                {
+                    ["ReservedKeys"] = reservedKeys,
+                    ["ReservedPrefix"] = MessagingConstants.ReservedAttributePrefix
+                });
+        }
+
+        // SECURITY: Fail closed - if tenant isolation is enabled but context not resolved, reject
+        if (_options.EnableTenantIsolation)
+        {
+            if (_tenantContext?.IsResolved != true)
+            {
+                _logger.LogError(
+                    "Tenant isolation is enabled but ITenantContext is not resolved. " +
+                    "Cannot publish message without tenant context.");
+
+                throw new GenesisException(
+                    nameof(SnsMessagingProvider),
+                    "Tenant context not resolved. Cannot publish messages when tenant isolation is enabled. " +
+                    "Ensure ITenantContext is properly configured and a tenant has been resolved for this request.",
+                    "TENANT_CONTEXT_NOT_RESOLVED",
+                    null);
+            }
+
+            // Inject tenant ID from ITenantContext (NEVER trust caller-supplied values)
+            attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
             {
                 DataType = "String",
                 StringValue = _tenantContext.TenantId.Value
             };
+
+            _logger.LogDebug(
+                "Stamped message with tenant ID: {TenantId}",
+                _tenantContext.TenantId.Value);
         }
     }
 

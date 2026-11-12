@@ -8,9 +8,9 @@
 
   <ItemGroup>
     <!-- AWS SDK for SQS queue operations -->
-    <PackageReference Include="AWSSDK.SQS" Version="3.7.500" />
+    <PackageReference Include="AWSSDK.SQS" Version="4.0.0" />
     <!-- AWS SDK for SNS topic operations -->
-    <PackageReference Include="AWSSDK.SimpleNotificationService" Version="3.7.400" />
+    <PackageReference Include="AWSSDK.SimpleNotificationService" Version="4.0.0" />
 
     <!-- Microsoft Extensions for DI, Logging, Options, Configuration -->
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />

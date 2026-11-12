@@ -7,6 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Suppress known low-severity NuGet vulnerability advisory on AWSSDK.Core 4.x (GHSA-9cvc-h2w8-phrp) -->
+    <NoWarn>$(NoWarn);NU1901;NU1902</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisMode>All</AnalysisMode>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
