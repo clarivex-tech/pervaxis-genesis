@@ -34,12 +34,33 @@ namespace Pervaxis.Genesis.FileStorage.AWS.Security;
 /// 
 /// Security features:
 /// - Validates tenant context is resolved before building keys
+/// - URL decodes keys until stable (max 10 iterations) to prevent encoding attacks
+/// - Applies Unicode normalization (FormC) to prevent lookalike character attacks
 /// - Rejects path traversal (../, ..\, %2e%2e, etc.)
 /// - Rejects control characters and dangerous patterns
 /// - Validates tenant ID format using shared TenantIdValidator
-/// - Enforces AWS S3 key length limits (1024 bytes)
+/// - Enforces AWS S3 key length limits (1024 bytes including tenant prefix)
 /// - Strips tenant prefix when returning keys to callers
 /// - Audit logs all validation failures
+/// 
+/// IMPORTANT NORMALIZATION BEHAVIOR:
+/// All keys are normalized to Unicode FormC (canonical composition) before validation.
+/// This means:
+/// 1. Files stored with different Unicode normalizations (FormD, NFKC, NFKD) may not match
+///    their original name when accessed through this resolver.
+/// 2. If files are uploaded by systems that don't use this resolver (e.g., AWS Console,
+///    direct S3 API calls, third-party tools), their keys may use different normalization.
+/// 3. To ensure consistent access, ALL file operations must go through this resolver.
+/// 4. Migration: If migrating existing files, normalize all keys to FormC first.
+/// 
+/// LITERAL % CHARACTER RESTRICTION:
+/// Keys containing literal % characters followed by hex digits (e.g., "report%20final.pdf")
+/// will be rejected if they look like URL-encoded patterns. This is a deliberate security
+/// tradeoff to prevent encoding-based path traversal attacks. Use alternative naming:
+/// - "report_20_final.pdf" or "report-20-final.pdf" instead of "report%20final.pdf"
+/// - Avoid % followed by two hex digits in filenames
+/// 
+/// Phase 1 = Application-enforced isolation only. IAM policies come in Phase 2.
 /// </remarks>
 public sealed class TenantKeyResolver
 {
@@ -355,10 +376,25 @@ public sealed class TenantKeyResolver
     /// Protects against double/triple encoding attacks (%252e%252e → %2e%2e → ..).
     /// Uses Uri.UnescapeDataString to preserve + characters (only decodes %XX).
     /// </summary>
+    /// <remarks>
+    /// SECURITY: This method rejects keys that don't stabilize within MaxIterations.
+    /// If a key is still changing after 10 decode passes, it's considered suspicious
+    /// and is rejected to prevent resource exhaustion attacks.
+    /// 
+    /// IMPORTANT: This means keys with literal % characters (e.g., "report%20final.pdf")
+    /// will be rejected if they contain patterns that look like URL encoding.
+    /// S3 does NOT decode keys server-side, so this is a deliberate security tradeoff:
+    /// we reject ambiguous keys to prevent traversal attacks via encoding tricks.
+    /// 
+    /// If your application needs literal % in filenames, consider alternative naming:
+    /// - Use different separators: "report_20_final.pdf" or "report-20-final.pdf"
+    /// - Avoid % followed by hex digits in filenames
+    /// </remarks>
     private string UrlDecodeUntilStable(string input)
     {
         const int MaxIterations = 10; // Prevent infinite loops
         var current = input;
+        var previousValue = input; // Track the previous iteration
         var iterations = 0;
 
         while (iterations < MaxIterations)
@@ -374,17 +410,25 @@ public sealed class TenantKeyResolver
                 return current;
             }
 
+            previousValue = current;
             current = decoded;
             iterations++;
         }
 
-        // If we hit max iterations, the input is suspicious
+        // If we hit max iterations, the key is still changing after 10 decode passes
+        // This is suspicious - reject it to prevent encoding attacks
         _logger.LogWarning(
-            "URL decode did not stabilize after {MaxIterations} iterations for input: {Input}",
+            "URL decode did not stabilize after {MaxIterations} iterations. " +
+            "Input: {Input}, Last value: {LastValue}",
             MaxIterations,
-            input);
+            input,
+            current);
 
-        throw new GenesisException(nameof(TenantKeyResolver), $"Excessive URL encoding detected in key (>{MaxIterations} levels)", FileStorageConstants.FailureReasons.InvalidKeyFormat, null);
+        throw new GenesisException(
+            nameof(TenantKeyResolver), 
+            $"Excessive URL encoding detected in key (>{MaxIterations} levels). Key did not stabilize.", 
+            FileStorageConstants.FailureReasons.InvalidKeyFormat, 
+            null);
     }
 
     /// <summary>
