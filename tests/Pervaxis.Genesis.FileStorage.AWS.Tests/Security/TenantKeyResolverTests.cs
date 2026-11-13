@@ -748,6 +748,7 @@ public sealed class TenantKeyResolverTests
         var result = resolver.ResolveKey(userKey);
 
         // Assert
+        ArgumentNullException.ThrowIfNull(userKey);
         result.Should().StartWith("tenants/acme/");
         result.Should().Contain(userKey.TrimStart('/'));
     }
@@ -998,6 +999,8 @@ public sealed class TenantKeyResolverTests
         // Arrange
         var mockContext = CreateMockTenantContext("acme");
         var resolver = CreateResolver(mockContext.Object);
+        // CA5394: deliberately non-cryptographic. A fixed seed keeps this fuzz test reproducible.
+#pragma warning disable CA5394
         var random = new Random(42); // Seeded for reproducibility
 
         // Pool of dangerous fragments that should trigger validation
@@ -1023,6 +1026,7 @@ public sealed class TenantKeyResolverTests
             }
             
             var randomKey = string.Join("", keyParts);
+#pragma warning restore CA5394
 
             // Act & Assert: Either throws or returns safe key in tenant scope
             try

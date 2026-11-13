@@ -1,4 +1,4 @@
-﻿/*
+/*
  ************************************************************************
  * Copyright (C) 2026 Clarivex Technologies Private Limited
  * All Rights Reserved.
@@ -21,6 +21,7 @@ using System.Diagnostics.Metrics;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
@@ -31,6 +32,7 @@ using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
+using Pervaxis.Genesis.FileStorage.AWS.Security;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
 
@@ -41,9 +43,11 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 {
     private readonly FileStorageOptions _options;
     private readonly ILogger<S3FileStorageProvider> _logger;
+    private readonly TenantKeyResolver _tenantKeyResolver;
     private readonly ITenantContext? _tenantContext;
     private readonly Lazy<IAmazonS3> _s3Client;
     private readonly ResiliencePipeline _resiliencePipeline;
+    private readonly bool _ownsClient;
     private bool _disposed;
 
     // Metrics
@@ -72,37 +76,28 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     /// </summary>
     /// <param name="options">File storage configuration options.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="tenantKeyResolver">Tenant key resolver for secure key resolution.</param>
     /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
     public S3FileStorageProvider(
         IOptions<FileStorageOptions> options,
         ILogger<S3FileStorageProvider> logger,
+        TenantKeyResolver tenantKeyResolver,
         ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(tenantKeyResolver);
 
         _options = options.Value;
         _logger = logger;
+        _tenantKeyResolver = tenantKeyResolver;
         _tenantContext = tenantContext;
 
         _options.Validate();
 
-        _s3Client = new Lazy<IAmazonS3>(() =>
-        {
-            var config = new AmazonS3Config
-            {
-                RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(_options.Region)
-            };
-
-            if (_options.UseLocalEmulator)
-            {
-                var emulatorUrl = _options.LocalEmulatorUrl?.ToString() ?? "http://localhost:4566";
-                config.ServiceURL = emulatorUrl;
-                config.ForcePathStyle = true;
-            }
-
-            return new AmazonS3Client(config);
-        });
+        // This constructor creates its own client, so this instance owns it and disposes it.
+        _ownsClient = true;
+        _s3Client = new Lazy<IAmazonS3>(() => S3ClientFactory.Create(_options));
 
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
             _options.Resilience,
@@ -118,19 +113,28 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     }
 
     /// <summary>
-    /// Internal constructor for testing with injected S3 client.
+    /// Initializes a new instance using a shared S3 client. This is the constructor used by dependency injection.
+    /// The client is a Singleton shared across scopes, so this provider does NOT dispose it.
     /// </summary>
-    internal S3FileStorageProvider(
+    /// <param name="options">File storage configuration options.</param>
+    /// <param name="logger">Logger instance.</param>
+    /// <param name="s3Client">Shared S3 client. Its lifetime is owned by the caller or the DI container.</param>
+    /// <param name="tenantKeyResolver">Tenant key resolver for secure key resolution.</param>
+    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
+    public S3FileStorageProvider(
         IOptions<FileStorageOptions> options,
         ILogger<S3FileStorageProvider> logger,
-        IAmazonS3 s3Client,
+        [FromKeyedServices(FileStorageConstants.S3ClientServiceKey)] IAmazonS3 s3Client,
+        TenantKeyResolver tenantKeyResolver,
         ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(s3Client);
+        ArgumentNullException.ThrowIfNull(tenantKeyResolver);
 
         _options = options.Value;
+        _tenantKeyResolver = tenantKeyResolver;
         _tenantContext = tenantContext;
         _logger = logger;
         _s3Client = new Lazy<IAmazonS3>(() => s3Client);
@@ -194,7 +198,8 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             _uploadSize.Record(contentLength, tags);
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
-            return fullKey;
+            // Return the user key, not the full S3 key (which includes tenant prefix)
+            return key;
         }
         catch (AmazonS3Exception ex)
         {
@@ -251,6 +256,16 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 async ct => await _s3Client.Value.GetObjectAsync(request, ct),
                 cancellationToken);
 
+            // Defense in depth: the object must carry this tenant's stamp. Dispose the response if rejected.
+            try
+            {
+                VerifyTenantStamp(response.Metadata, fullKey);
+            }
+            catch (GenesisException)
+            {
+                response.Dispose();
+                throw;
+            }
             activity?.SetTag("storage.size", response.ContentLength);
             _logger.LogInformation(
                 "Successfully downloaded file {Key} ({Size} bytes) from bucket {Bucket}",
@@ -396,9 +411,12 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 Key = fullKey
             };
 
-            await _resiliencePipeline.ExecuteAsync(
+            var existsResponse = await _resiliencePipeline.ExecuteAsync(
                 async ct => await _s3Client.Value.GetObjectMetadataAsync(request, ct),
                 cancellationToken);
+
+            // An object under this tenant's prefix with a missing or foreign stamp must not be reported as existing.
+            VerifyTenantStamp(existsResponse.Metadata, fullKey);
 
             activity?.SetTag("storage.exists", true);
             _logger.LogDebug("File {Key} exists in bucket {Bucket}", fullKey, _options.BucketName);
@@ -465,6 +483,17 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
         if (expiry <= TimeSpan.Zero)
         {
             throw new ArgumentException("Expiry must be greater than zero.", nameof(expiry));
+        }
+
+        // Enforce maximum expiry cap for security
+        var maxExpiry = TimeSpan.FromMinutes(_options.MaxPresignedUrlExpiryMinutes);
+        if (expiry > maxExpiry)
+        {
+            throw new GenesisException(
+                nameof(S3FileStorageProvider),
+                $"Presigned URL expiry cannot exceed {maxExpiry.TotalHours:F0} hours. Requested: {expiry.TotalHours:F1} hours.",
+                FileStorageConstants.FailureReasons.PresignedUrlExpiryExceeded,
+                null);
         }
 
         try
@@ -553,13 +582,17 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                 async ct => await _s3Client.Value.GetObjectMetadataAsync(request, ct),
                 cancellationToken);
 
+            VerifyTenantStamp(response.Metadata, fullKey);
+
             _logger.LogInformation("Retrieved metadata for file {Key}", fullKey);
 
             var tags = GetMetricTags("get_metadata", "success");
             _operationsCounter.Add(1, tags);
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
-            return response.Metadata.Keys.ToDictionary(k => k, k => response.Metadata[k]);
+            return response.Metadata.Keys
+                .Where(k => !IsTenantStampKey(k))
+                .ToDictionary(k => k, k => response.Metadata[k]);
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -616,9 +649,8 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
 
         try
         {
-            var fullPrefix = string.IsNullOrWhiteSpace(prefix)
-                ? _options.KeyPrefix
-                : GetFullKey(prefix);
+            // Use TenantKeyResolver for prefix resolution to ensure tenant isolation
+            var fullPrefix = (_options.KeyPrefix ?? string.Empty) + _tenantKeyResolver.ResolvePrefix(prefix);
 
             _logger.LogDebug(
                 "Listing files with prefix {Prefix} in bucket {Bucket}",
@@ -640,7 +672,8 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                     async ct => await _s3Client.Value.ListObjectsV2Async(request, ct),
                     cancellationToken);
 
-                keys.AddRange(response.S3Objects.Select(obj =>
+                // AWS SDK v4 returns S3Objects == null (not empty) when the listing has no objects.
+                keys.AddRange((response.S3Objects ?? []).Select(obj =>
                     RemoveKeyPrefix(obj.Key)));
 
                 request.ContinuationToken = response.NextContinuationToken;
@@ -717,18 +750,10 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             }
         }
 
-        if (metadata != null)
+        // Caller metadata plus the tenant stamp and tags. Reserved keys are rejected, never overridden.
+        foreach (var kvp in BuildObjectMetadata(metadata))
         {
-            foreach (var kvp in metadata)
-            {
-                request.Metadata.Add(kvp.Key, kvp.Value);
-            }
-        }
-
-        // Add tenant tags
-        foreach (var tag in BuildTenantTags())
-        {
-            request.Metadata.Add($"x-amz-meta-{tag.Key}", tag.Value);
+            request.Metadata.Add(kvp.Key, kvp.Value);
         }
 
         await _resiliencePipeline.ExecuteAsync(
@@ -770,18 +795,10 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             }
         }
 
-        if (metadata != null)
+        // Caller metadata plus the tenant stamp and tags. Reserved keys are rejected, never overridden.
+        foreach (var kvp in BuildObjectMetadata(metadata))
         {
-            foreach (var kvp in metadata)
-            {
-                request.Metadata.Add(kvp.Key, kvp.Value);
-            }
-        }
-
-        // Add tenant tags
-        foreach (var tag in BuildTenantTags())
-        {
-            request.Metadata.Add($"x-amz-meta-{tag.Key}", tag.Value);
+            request.Metadata.Add(kvp.Key, kvp.Value);
         }
 
         await _resiliencePipeline.ExecuteAsync(
@@ -790,37 +807,23 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     }
 
     /// <summary>
-    /// Gets the full S3 key with configured prefix.
+    /// Gets the full S3 key using TenantKeyResolver for secure tenant isolation.
+    /// Applies KeyPrefix at the bucket level if configured.
+    /// Final structure: {KeyPrefix}tenants/{tenant-id}/{user-key}
     /// </summary>
     private string GetFullKey(string key)
     {
-        // Validate key doesn't contain path traversal sequences
-        if (key.Contains("../", StringComparison.Ordinal) ||
-            key.Contains("..\\", StringComparison.Ordinal))
+        // First resolve tenant isolation: tenants/{tenant-id}/{user-key}
+        var tenantScopedKey = _tenantKeyResolver.ResolveKey(key);
+            
+        // Then apply KeyPrefix at the bucket level (if configured)
+        // This allows multi-environment buckets: dev/tenants/..., staging/tenants/..., prod/tenants/...
+        if (string.IsNullOrEmpty(_options.KeyPrefix))
         {
-            throw new ArgumentException(
-                "File key cannot contain path traversal sequences (../ or ..\\). " +
-                "Use forward slashes (/) for path separators.",
-                nameof(key));
+            return tenantScopedKey;
         }
-
-        var parts = new List<string>();
-
-        if (!string.IsNullOrWhiteSpace(_options.KeyPrefix))
-        {
-            parts.Add(_options.KeyPrefix.TrimEnd('/'));
-        }
-
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
-        {
-            parts.Add($"tenant-{_tenantContext.TenantId.Value}");
-        }
-
-        // Normalize the key: convert backslashes, remove leading/trailing slashes, collapse multiple slashes
-        var normalizedKey = NormalizeS3Key(key);
-        parts.Add(normalizedKey);
-
-        return string.Join("/", parts);
+            
+        return _options.KeyPrefix + tenantScopedKey;
     }
 
     /// <summary>
@@ -849,19 +852,139 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
     }
 
     /// <summary>
-    /// Removes the configured prefix from an S3 key.
+    /// Converts a full S3 key back to the caller-visible key: removes the configured KeyPrefix,
+    /// then the tenant prefix. Throws if the key is outside either prefix instead of returning it.
     /// </summary>
     private string RemoveKeyPrefix(string fullKey)
     {
-        if (string.IsNullOrWhiteSpace(_options.KeyPrefix))
+        var keyPrefix = _options.KeyPrefix ?? string.Empty;
+        var withoutKeyPrefix = fullKey;
+
+        if (keyPrefix.Length > 0)
         {
-            return fullKey;
+            if (!fullKey.StartsWith(keyPrefix, StringComparison.Ordinal))
+            {
+                _logger.LogError(
+                    "S3 returned key {FullKey} outside the configured key prefix {KeyPrefix}",
+                    fullKey,
+                    keyPrefix);
+
+                throw new GenesisException(
+                    nameof(S3FileStorageProvider),
+                    $"Key '{fullKey}' is outside the configured key prefix.",
+                    FileStorageConstants.FailureReasons.TenantMismatchOnDownload,
+                    null);
+            }
+
+            withoutKeyPrefix = fullKey[keyPrefix.Length..];
         }
 
-        var prefix = _options.KeyPrefix.TrimEnd('/') + "/";
-        return fullKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-            ? fullKey[prefix.Length..]
-            : fullKey;
+        return _tenantKeyResolver.StripTenantPrefix(withoutKeyPrefix);
+    }
+
+    private const string AmzMetaPrefix = "x-amz-meta-";
+
+    private static string NormalizeMetadataKey(string key) =>
+        key.StartsWith(AmzMetaPrefix, StringComparison.OrdinalIgnoreCase) ? key[AmzMetaPrefix.Length..] : key;
+
+    private static bool IsTenantStampKey(string key) =>
+        NormalizeMetadataKey(key).Equals(FileStorageConstants.TenantIdMetadataKey, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Builds the metadata written with an object: caller metadata, the tenant stamp and the tenant tags.
+    /// Callers may not set the stamp (or the tenant tag keys while isolation is enabled); that is rejected
+    /// rather than silently overwritten so a bad caller is visible.
+    /// </summary>
+    internal Dictionary<string, string> BuildObjectMetadata(IDictionary<string, string>? callerMetadata)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (callerMetadata != null)
+        {
+            foreach (var kvp in callerMetadata)
+            {
+                var normalized = NormalizeMetadataKey(kvp.Key);
+                var reserved = IsTenantStampKey(kvp.Key)
+                    || (_options.EnableTenantIsolation
+                        && (normalized.Equals("TenantId", StringComparison.OrdinalIgnoreCase)
+                            || normalized.Equals("TenantName", StringComparison.OrdinalIgnoreCase)));
+
+                if (reserved)
+                {
+                    _logger.LogWarning("Rejected caller metadata with reserved key {MetadataKey}", kvp.Key);
+
+                    throw new GenesisException(
+                        nameof(S3FileStorageProvider),
+                        $"Metadata key '{kvp.Key}' is reserved for tenant isolation and cannot be set by callers.",
+                        FileStorageConstants.FailureReasons.ReservedMetadataKey,
+                        null);
+                }
+
+                result[normalized] = kvp.Value;
+            }
+        }
+
+        if (_options.EnableTenantIsolation)
+        {
+            result[FileStorageConstants.TenantIdMetadataKey] = _tenantKeyResolver.GetTenantId();
+        }
+
+        foreach (var tag in BuildTenantTags())
+        {
+            result[tag.Key] = tag.Value;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Verifies that an object carries the current tenant's stamp. S3 returns metadata names lower-cased and
+    /// with the x-amz-meta- prefix, so the comparison ignores both. A missing stamp is rejected (fail closed).
+    /// </summary>
+    private void VerifyTenantStamp(MetadataCollection metadata, string fullKey)
+    {
+        if (!_options.EnableTenantIsolation)
+        {
+            return;
+        }
+
+        var expectedTenantId = _tenantKeyResolver.GetTenantId();
+        string? storedTenantId = null;
+
+        foreach (var name in metadata.Keys)
+        {
+            if (IsTenantStampKey(name))
+            {
+                storedTenantId = metadata[name];
+                break;
+            }
+        }
+
+        if (storedTenantId is null)
+        {
+            _logger.LogError("Object {Key} has no tenant stamp; rejecting for safety", fullKey);
+
+            throw new GenesisException(
+                nameof(S3FileStorageProvider),
+                $"Object is missing the '{FileStorageConstants.TenantIdMetadataKey}' tenant stamp and is rejected.",
+                FileStorageConstants.FailureReasons.TenantStampMissing,
+                null);
+        }
+
+        if (!string.Equals(storedTenantId, expectedTenantId, StringComparison.Ordinal))
+        {
+            _logger.LogError(
+                "Tenant stamp mismatch on {Key}: expected {ExpectedTenant}, found {StoredTenant}",
+                fullKey,
+                expectedTenantId,
+                storedTenantId);
+
+            throw new GenesisException(
+                nameof(S3FileStorageProvider),
+                $"Tenant ID mismatch: object belongs to '{storedTenantId}', current tenant is '{expectedTenantId}'",
+                FileStorageConstants.FailureReasons.TenantMismatchOnDownload,
+                null);
+        }
     }
 
     /// <inheritdoc />
@@ -872,7 +995,9 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
             return;
         }
 
-        if (_s3Client.IsValueCreated)
+        // Only dispose a client this instance created. An injected client is a shared Singleton
+        // and disposing it here would break every other scope.
+        if (_ownsClient && _s3Client.IsValueCreated)
         {
             _s3Client.Value.Dispose();
             _logger.LogDebug("S3 client disposed");

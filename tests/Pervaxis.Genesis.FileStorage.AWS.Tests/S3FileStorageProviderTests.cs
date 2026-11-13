@@ -22,9 +22,11 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
 using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
+using Pervaxis.Genesis.FileStorage.AWS.Security;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Tests;
 
@@ -37,9 +39,10 @@ public abstract class S3FileStorageProviderTests
         {
             // Arrange
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var tenantKeyResolver = CreateTenantKeyResolver();
 
             // Act & Assert
-            var act = () => new S3FileStorageProvider(null!, logger);
+            var act = () => new S3FileStorageProvider(null!, logger, tenantKeyResolver);
             act.Should().Throw<ArgumentNullException>().WithParameterName("options");
         }
 
@@ -48,10 +51,23 @@ public abstract class S3FileStorageProviderTests
         {
             // Arrange
             var options = CreateValidOptions();
+            var tenantKeyResolver = CreateTenantKeyResolver();
 
             // Act & Assert
-            var act = () => new S3FileStorageProvider(options, null!);
+            var act = () => new S3FileStorageProvider(options, null!, tenantKeyResolver);
             act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
+        }
+        
+        [Fact]
+        public void NullTenantKeyResolver_ThrowsArgumentNullException()
+        {
+            // Arrange
+            var options = CreateValidOptions();
+            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+
+            // Act & Assert
+            var act = () => new S3FileStorageProvider(options, logger, null!);
+            act.Should().Throw<ArgumentNullException>().WithParameterName("tenantKeyResolver");
         }
 
         [Fact]
@@ -64,9 +80,10 @@ public abstract class S3FileStorageProviderTests
                 BucketName = "test-bucket"
             });
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var tenantKeyResolver = CreateTenantKeyResolver();
 
             // Act & Assert
-            var act = () => new S3FileStorageProvider(options, logger);
+            var act = () => new S3FileStorageProvider(options, logger, tenantKeyResolver);
             act.Should().Throw<ArgumentException>();
         }
 
@@ -80,9 +97,10 @@ public abstract class S3FileStorageProviderTests
                 BucketName = ""
             });
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var tenantKeyResolver = CreateTenantKeyResolver();
 
             // Act & Assert
-            var act = () => new S3FileStorageProvider(options, logger);
+            var act = () => new S3FileStorageProvider(options, logger, tenantKeyResolver);
             act.Should().Throw<ArgumentException>();
         }
 
@@ -92,9 +110,10 @@ public abstract class S3FileStorageProviderTests
             // Arrange
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var tenantKeyResolver = CreateTenantKeyResolver();
 
             // Act
-            var provider = new S3FileStorageProvider(options, logger);
+            var provider = new S3FileStorageProvider(options, logger, tenantKeyResolver);
 
             // Assert
             provider.Should().NotBeNull();
@@ -106,9 +125,10 @@ public abstract class S3FileStorageProviderTests
             // Arrange
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
+            var tenantKeyResolver = CreateTenantKeyResolver();
 
             // Act & Assert
-            var act = () => new S3FileStorageProvider(options, logger, (IAmazonS3)null!);
+            var act = () => new S3FileStorageProvider(options, logger, (IAmazonS3)null!, tenantKeyResolver);
             act.Should().Throw<ArgumentNullException>().WithParameterName("s3Client");
         }
     }
@@ -158,7 +178,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Verify(x => x.PutObjectAsync(
                 It.Is<PutObjectRequest>(r =>
                     r.BucketName == "test-bucket" &&
-                    r.Key == "test-file.txt" &&
+                    r.Key == "tenants/test-tenant/test-file.txt" &&  // S3 key includes tenant prefix
                     r.ContentType == "text/plain"),
                 It.IsAny<CancellationToken>()), Times.Once);
         }
@@ -208,9 +228,11 @@ public abstract class S3FileStorageProviderTests
             var key = await provider.UploadAsync("file.txt", content);
 
             // Assert
-            key.Should().Be("uploads/file.txt");
+            // API returns user key (infrastructure details like KeyPrefix are hidden)
+            key.Should().Be("file.txt");
+            // S3 key includes KeyPrefix + tenant isolation: {KeyPrefix}tenants/{tenant-id}/{user-key}
             s3Mock.Verify(x => x.PutObjectAsync(
-                It.Is<PutObjectRequest>(r => r.Key == "uploads/file.txt"),
+                It.Is<PutObjectRequest>(r => r.Key == "uploads/tenants/test-tenant/file.txt"),
                 It.IsAny<CancellationToken>()), Times.Once);
         }
 
@@ -259,6 +281,8 @@ public abstract class S3FileStorageProviderTests
                 ResponseStream = responseStream,
                 ContentLength = testContent.Length
             };
+            // Add tenant metadata stamp (required by new security implementation)
+            response.Metadata["pervaxis-tenant-id"] = "test-tenant";
 
             s3Mock.Setup(x => x.GetObjectAsync(
                     It.IsAny<GetObjectRequest>(),
@@ -273,6 +297,59 @@ public abstract class S3FileStorageProviderTests
             using var reader = new StreamReader(result!);
             var content = await reader.ReadToEndAsync();
             content.Should().Be("test file content");
+        }
+        
+        [Fact]
+        public async Task FileExists_ButMissingMetadata_ThrowsGenesisException()
+        {
+            // Arrange
+            var (provider, s3Mock) = CreateProvider();
+            var testContent = "test file content"u8.ToArray();
+            var responseStream = new MemoryStream(testContent);
+
+            var response = new GetObjectResponse
+            {
+                ResponseStream = responseStream,
+                ContentLength = testContent.Length
+                // NOTE: Missing pervaxis-tenant-id metadata
+            };
+
+            s3Mock.Setup(x => x.GetObjectAsync(
+                    It.IsAny<GetObjectRequest>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(response);
+
+            // Act & Assert
+            var act = async () => await provider.DownloadAsync("test-file.txt");
+            (await act.Should().ThrowAsync<GenesisException>())
+                .Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.TenantStampMissing);
+        }
+        
+        [Fact]
+        public async Task FileExists_ButWrongTenantMetadata_ThrowsGenesisException()
+        {
+            // Arrange
+            var (provider, s3Mock) = CreateProvider();
+            var testContent = "test file content"u8.ToArray();
+            var responseStream = new MemoryStream(testContent);
+
+            var response = new GetObjectResponse
+            {
+                ResponseStream = responseStream,
+                ContentLength = testContent.Length
+            };
+            // Add metadata for DIFFERENT tenant
+            response.Metadata["pervaxis-tenant-id"] = "different-tenant";
+
+            s3Mock.Setup(x => x.GetObjectAsync(
+                    It.IsAny<GetObjectRequest>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(response);
+
+            // Act & Assert
+            var act = async () => await provider.DownloadAsync("test-file.txt");
+            (await act.Should().ThrowAsync<GenesisException>())
+                .Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.TenantMismatchOnDownload);
         }
 
         [Fact]
@@ -346,7 +423,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Verify(x => x.DeleteObjectAsync(
                 It.Is<DeleteObjectRequest>(r =>
                     r.BucketName == "test-bucket" &&
-                    r.Key == "test-file.txt"),
+                    r.Key == "tenants/test-tenant/test-file.txt"),  // S3 key includes tenant prefix
                 It.IsAny<CancellationToken>()), Times.Once);
         }
 
@@ -390,7 +467,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Setup(x => x.GetObjectMetadataAsync(
                     It.IsAny<GetObjectMetadataRequest>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new GetObjectMetadataResponse());
+                .ReturnsAsync(StampedMetadataResponse());
 
             // Act
             var result = await provider.ExistsAsync("test-file.txt");
@@ -480,7 +557,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Verify(x => x.GetPreSignedURL(
                 It.Is<GetPreSignedUrlRequest>(r =>
                     r.BucketName == "test-bucket" &&
-                    r.Key == "test-file.txt")), Times.Once);
+                    r.Key == "tenants/test-tenant/test-file.txt")), Times.Once);  // S3 key includes tenant prefix
         }
 
         [Fact]
@@ -523,6 +600,7 @@ public abstract class S3FileStorageProviderTests
             // The Metadata property is a MetadataCollection that needs to be populated via Add or indexer
             response.Metadata["x-amz-meta-author"] = "test-user";
             response.Metadata["x-amz-meta-version"] = "1.0";
+            response.Metadata["x-amz-meta-pervaxis-tenant-id"] = "test-tenant";
 
             s3Mock.Setup(x => x.GetObjectMetadataAsync(
                     It.IsAny<GetObjectMetadataRequest>(),
@@ -590,9 +668,10 @@ public abstract class S3FileStorageProviderTests
             {
                 S3Objects = new List<S3Object>
                 {
-                    new() { Key = "file1.txt" },
-                    new() { Key = "file2.txt" },
-                    new() { Key = "dir/file3.txt" }
+                    // S3 returns tenant-prefixed keys
+                    new() { Key = "tenants/test-tenant/file1.txt" },
+                    new() { Key = "tenants/test-tenant/file2.txt" },
+                    new() { Key = "tenants/test-tenant/dir/file3.txt" }
                 },
                 IsTruncated = false
             };
@@ -605,7 +684,7 @@ public abstract class S3FileStorageProviderTests
             // Act
             var files = await provider.ListAsync();
 
-            // Assert
+            // Assert - API returns user keys (tenant prefix stripped)
             files.Should().HaveCount(3);
             files.Should().Contain("file1.txt");
             files.Should().Contain("file2.txt");
@@ -622,22 +701,26 @@ public abstract class S3FileStorageProviderTests
             {
                 S3Objects = new List<S3Object>
                 {
-                    new() { Key = "docs/file1.txt" },
-                    new() { Key = "docs/file2.txt" }
+                    // S3 returns tenant-prefixed keys
+                    new() { Key = "tenants/test-tenant/docs/file1.txt" },
+                    new() { Key = "tenants/test-tenant/docs/file2.txt" }
                 },
                 IsTruncated = false
             };
 
             s3Mock.Setup(x => x.ListObjectsV2Async(
-                    It.Is<ListObjectsV2Request>(r => r.Prefix == "docs/"),
+                    // S3 request uses tenant-prefixed prefix
+                    It.Is<ListObjectsV2Request>(r => r.Prefix == "tenants/test-tenant/docs/"),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(response);
 
             // Act
             var files = await provider.ListAsync("docs/");
 
-            // Assert
+            // Assert - API returns user keys (tenant prefix stripped)
             files.Should().HaveCount(2);
+            files.Should().Contain("docs/file1.txt");
+            files.Should().Contain("docs/file2.txt");
         }
 
         [Fact]
@@ -650,8 +733,9 @@ public abstract class S3FileStorageProviderTests
             {
                 S3Objects = new List<S3Object>
                 {
-                    new() { Key = "file1.txt" },
-                    new() { Key = "file2.txt" }
+                    // S3 returns tenant-prefixed keys
+                    new() { Key = "tenants/test-tenant/file1.txt" },
+                    new() { Key = "tenants/test-tenant/file2.txt" }
                 },
                 IsTruncated = true,
                 NextContinuationToken = "token1"
@@ -661,7 +745,7 @@ public abstract class S3FileStorageProviderTests
             {
                 S3Objects = new List<S3Object>
                 {
-                    new() { Key = "file3.txt" }
+                    new() { Key = "tenants/test-tenant/file3.txt" }
                 },
                 IsTruncated = false
             };
@@ -675,8 +759,11 @@ public abstract class S3FileStorageProviderTests
             // Act
             var files = await provider.ListAsync();
 
-            // Assert
+            // Assert - API returns user keys (tenant prefix stripped)
             files.Should().HaveCount(3);
+            files.Should().Contain("file1.txt");
+            files.Should().Contain("file2.txt");
+            files.Should().Contain("file3.txt");
             s3Mock.Verify(x => x.ListObjectsV2Async(
                 It.IsAny<ListObjectsV2Request>(),
                 It.IsAny<CancellationToken>()), Times.Exactly(2));
@@ -708,7 +795,8 @@ public abstract class S3FileStorageProviderTests
             // Arrange
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
-            var provider = new S3FileStorageProvider(options, logger);
+            var tenantKeyResolver = CreateTenantKeyResolver();
+            var provider = new S3FileStorageProvider(options, logger, tenantKeyResolver);
 
             // Act
             provider.Dispose();
@@ -718,7 +806,7 @@ public abstract class S3FileStorageProviderTests
         }
 
         [Fact]
-        public async Task WhenClientWasUsed_DisposesS3Client()
+        public async Task WhenInjectedClientWasUsed_DoesNotDisposeSharedS3Client()
         {
             // Arrange
             var (provider, s3Mock) = CreateProvider();
@@ -726,7 +814,7 @@ public abstract class S3FileStorageProviderTests
             s3Mock.Setup(x => x.GetObjectMetadataAsync(
                     It.IsAny<GetObjectMetadataRequest>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new GetObjectMetadataResponse());
+                .ReturnsAsync(StampedMetadataResponse());
 
             // Use the provider to trigger client creation
             await provider.ExistsAsync("test-file.txt");
@@ -735,7 +823,8 @@ public abstract class S3FileStorageProviderTests
             provider.Dispose();
 
             // Assert
-            s3Mock.Verify(x => x.Dispose(), Times.Once);
+            // The injected client is a shared Singleton; disposing it per scope would break other requests.
+            s3Mock.Verify(x => x.Dispose(), Times.Never);
         }
     }
 
@@ -770,15 +859,48 @@ public abstract class S3FileStorageProviderTests
     }
 
     private static (S3FileStorageProvider Provider, Mock<IAmazonS3> S3Mock) CreateProvider(
-        IOptions<FileStorageOptions>? options = null)
+        IOptions<FileStorageOptions>? options = null,
+        ITenantContext? tenantContext = null)
     {
         options ??= CreateValidOptions();
         var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
         var s3Mock = new Mock<IAmazonS3>();
+        
+        // Create tenant context with a real tenant ID if not provided
+        if (tenantContext == null)
+        {
+            var tenantMock = new Mock<ITenantContext>();
+            tenantMock.Setup(x => x.IsResolved).Returns(true);
+            tenantMock.Setup(x => x.TenantId).Returns(new TenantId("test-tenant"));
+            tenantContext = tenantMock.Object;
+        }
+        
+        // Create TenantKeyResolver with the tenant context
+        var tenantKeyResolver = new TenantKeyResolver(tenantContext, Mock.Of<ILogger<TenantKeyResolver>>());
 
-        var provider = new S3FileStorageProvider(options, logger, s3Mock.Object);
+        var provider = new S3FileStorageProvider(options, logger, s3Mock.Object, tenantKeyResolver, tenantContext);
 
         return (provider, s3Mock);
+    }
+    
+    private static TenantKeyResolver CreateTenantKeyResolver(ITenantContext? tenantContext = null)
+    {
+        if (tenantContext == null)
+        {
+            var tenantMock = new Mock<ITenantContext>();
+            tenantMock.Setup(x => x.IsResolved).Returns(true);
+            tenantMock.Setup(x => x.TenantId).Returns(new TenantId("test-tenant"));
+            tenantContext = tenantMock.Object;
+        }
+        
+        return new TenantKeyResolver(tenantContext, Mock.Of<ILogger<TenantKeyResolver>>());
+    }
+
+    private static GetObjectMetadataResponse StampedMetadataResponse(string tenantId = "test-tenant")
+    {
+        var response = new GetObjectMetadataResponse();
+        response.Metadata[FileStorageConstants.TenantIdMetadataKey] = tenantId;
+        return response;
     }
 
     private static MemoryStream CreateTestStream(int sizeBytes)
@@ -794,73 +916,61 @@ public abstract class S3FileStorageProviderTests
     public class SecurityTests : S3FileStorageProviderTests
     {
         [Fact]
-        public async Task UploadAsync_WithPathTraversalInKey_ThrowsArgumentException()
+        public async Task UploadAsync_WithPathTraversalInKey_ThrowsGenesisException()
         {
             // Arrange
-            var options = CreateValidOptions();
-            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
-            var s3Client = Mock.Of<IAmazonS3>();
-            var provider = new S3FileStorageProvider(options, logger, s3Client);
+            var (provider, _) = CreateProvider();
             using var stream = CreateTestStream(100);
 
-            // Act & Assert - path traversal should be rejected
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => provider.UploadAsync("../../../sensitive-file.txt", stream));
-
-            exception.ParamName.Should().Be("key");
-            exception.Message.Should().Contain("path traversal");
+            // Act & Assert - path traversal should be rejected by TenantKeyResolver
+            var act = async () => await provider.UploadAsync("../../../sensitive-file.txt", stream);
+            var exception = await act.Should().ThrowAsync<GenesisException>();
+            
+            // Verify error code is set correctly
+            exception.Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.KeyPathTraversal);
         }
 
         [Fact]
-        public async Task UploadAsync_WithBackslashPathTraversal_ThrowsArgumentException()
+        public async Task UploadAsync_WithBackslashPathTraversal_ThrowsGenesisException()
         {
             // Arrange
-            var options = CreateValidOptions();
-            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
-            var s3Client = Mock.Of<IAmazonS3>();
-            var provider = new S3FileStorageProvider(options, logger, s3Client);
+            var (provider, _) = CreateProvider();
             using var stream = CreateTestStream(100);
 
             // Act & Assert - backslash path traversal should also be rejected
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => provider.UploadAsync("..\\..\\sensitive-file.txt", stream));
-
-            exception.ParamName.Should().Be("key");
-            exception.Message.Should().Contain("path traversal");
+            var act = async () => await provider.UploadAsync("..\\..\\sensitive-file.txt", stream);
+            var exception = await act.Should().ThrowAsync<GenesisException>();
+            
+            // Verify error code
+            exception.Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.KeyPathTraversal);
         }
 
         [Fact]
-        public async Task DownloadAsync_WithPathTraversalInKey_ThrowsArgumentException()
+        public async Task DownloadAsync_WithPathTraversalInKey_ThrowsGenesisException()
         {
             // Arrange
-            var options = CreateValidOptions();
-            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
-            var s3Client = Mock.Of<IAmazonS3>();
-            var provider = new S3FileStorageProvider(options, logger, s3Client);
+            var (provider, _) = CreateProvider();
 
             // Act & Assert
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => provider.DownloadAsync("../../other-tenant/file.txt"));
-
-            exception.ParamName.Should().Be("key");
-            exception.Message.Should().Contain("path traversal");
+            var act = async () => await provider.DownloadAsync("../../other-tenant/file.txt");
+            var exception = await act.Should().ThrowAsync<GenesisException>();
+            
+            // Verify error code
+            exception.Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.KeyPathTraversal);
         }
 
         [Fact]
-        public async Task DeleteAsync_WithPathTraversalInKey_ThrowsArgumentException()
+        public async Task DeleteAsync_WithPathTraversalInKey_ThrowsGenesisException()
         {
             // Arrange
-            var options = CreateValidOptions();
-            var logger = Mock.Of<ILogger<S3FileStorageProvider>>();
-            var s3Client = Mock.Of<IAmazonS3>();
-            var provider = new S3FileStorageProvider(options, logger, s3Client);
+            var (provider, _) = CreateProvider();
 
             // Act & Assert
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => provider.DeleteAsync("../sensitive.txt"));
-
-            exception.ParamName.Should().Be("key");
-            exception.Message.Should().Contain("path traversal");
+            var act = async () => await provider.DeleteAsync("../sensitive.txt");
+            var exception = await act.Should().ThrowAsync<GenesisException>();
+            
+            // Verify error code
+            exception.Which.ErrorCode.Should().Be(FileStorageConstants.FailureReasons.KeyPathTraversal);
         }
     }
 }

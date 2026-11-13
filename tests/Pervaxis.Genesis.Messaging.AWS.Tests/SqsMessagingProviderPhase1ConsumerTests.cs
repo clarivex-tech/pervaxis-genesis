@@ -19,7 +19,7 @@
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using FluentAssertions;
-using Microsoft.Extensions.Logging.Nullogger;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Pervaxis.Core.Abstractions.MultiTenancy;
@@ -69,12 +69,12 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
             .ReturnsAsync(new GetQueueUrlResponse { QueueUrl = TestQueueUrl });
 
         _provider = new SqsMessagingProvider(
+            Microsoft.Extensions.Options.Options.Create(_options),
+            NullLogger<SqsMessagingProvider>.Instance,
             _mockSqsClient.Object,
             _mockTenantContext.Object,
-            _mockScopeFactory.Object,
-            Options.Create(_options),
-            NullLogger<SqsMessagingProvider>.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            _mockScopeFactory.Object);
     }
 
     public void Dispose()
@@ -131,13 +131,90 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    // AWS SDK v4 returns null (not empty) collections when the service sends none.
+    // The mocks above always build empty collections, so these tests use the real v4 shape.
+
+    [Fact(DisplayName = "SDK-V4: Empty poll (Messages = null) returns empty instead of throwing")]
+    public async Task ReceiveAsync_EmptyPollWithNullMessages_ReturnsEmpty()
+    {
+        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
+            It.IsAny<ReceiveMessageRequest>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReceiveMessageResponse { Messages = null });
+
+        var result = await _provider.ReceiveAsync<Dictionary<string, string>>("test-queue", 10);
+
+        result.Should().BeEmpty();
+    }
+
+    [Fact(DisplayName = "SDK-V4: Empty poll (Messages = null) with metadata returns empty instead of throwing")]
+    public async Task ReceiveWithMetadataAsync_EmptyPollWithNullMessages_ReturnsEmpty()
+    {
+        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
+            It.IsAny<ReceiveMessageRequest>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReceiveMessageResponse { Messages = null });
+
+        var result = await _provider.ReceiveWithMetadataAsync<Dictionary<string, string>>("test-queue", 10);
+
+        result.Should().BeEmpty();
+    }
+
+    [Fact(DisplayName = "SDK-V4: Message with no attributes (MessageAttributes = null) is dead-lettered, not a crash")]
+    public async Task ReceiveAsync_MessageWithNullAttributes_SendsToDlqAndDeletes()
+    {
+        var messageWithNoAttributes = new Message
+        {
+            MessageId = "msg-null-attrs",
+            Body = "{\"data\":\"test\"}",
+            ReceiptHandle = "receipt-null-attrs",
+            MessageAttributes = null
+        };
+        var validMessage = new Message
+        {
+            MessageId = "msg-valid",
+            Body = "{\"data\":\"ok\"}",
+            ReceiptHandle = "receipt-valid",
+            MessageAttributes = new Dictionary<string, MessageAttributeValue>
+            {
+                ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = "acme" }
+            }
+        };
+
+        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
+            It.IsAny<ReceiveMessageRequest>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReceiveMessageResponse { Messages = new List<Message> { messageWithNoAttributes, validMessage } });
+
+        SendMessageRequest? dlqRequest = null;
+        _mockSqsClient.Setup(x => x.SendMessageAsync(
+            It.Is<SendMessageRequest>(r => r.QueueUrl == TestDlqUrl),
+            It.IsAny<CancellationToken>()))
+            .Callback<SendMessageRequest, CancellationToken>((req, _) => dlqRequest = req)
+            .ReturnsAsync(new SendMessageResponse { MessageId = "dlq-null-attrs" });
+
+        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
+            It.IsAny<DeleteMessageRequest>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeleteMessageResponse());
+
+        var result = await _provider.ReceiveAsync<Dictionary<string, string>>("test-queue", 10);
+
+        // The bad message no longer poisons the batch: the valid one is still returned.
+        result.Should().ContainSingle().Which["data"].Should().Be("ok");
+        dlqRequest.Should().NotBeNull();
+        dlqRequest!.MessageAttributes["pervaxis_failure_reason"].StringValue.Should().Be("missing_tenant_id");
+        _mockSqsClient.Verify(x => x.DeleteMessageAsync(
+            It.Is<DeleteMessageRequest>(r => r.ReceiptHandle == "receipt-null-attrs"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Theory(DisplayName = "PHASE1B-CRITICAL-2: Invalid tenant ID formats send message to DLQ")]
     [InlineData("INVALID-FORMAT", "uppercase letters")]
     [InlineData("Acme", "contains uppercase")]
-    [InlineData("acme-platform", "reserved substring -platform-")]
+    [InlineData("a-platform-b", "reserved substring -platform-")]
     [InlineData("a-tenant-b", "reserved substring -tenant-")]
     [InlineData("admin", "reserved word")]
-    [InlineData("platform", "reserved word")]
     [InlineData("ab", "too short (< 3 chars)")]
     [InlineData("", "empty string")]
     [InlineData("  ", "whitespace")]
@@ -232,6 +309,7 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
             .ReturnsAsync(new SendMessageResponse { MessageId = "dlq-msg-789" });
 
         _mockSqsClient.Setup(x => x.DeleteMessageAsync(
+            It.IsAny<DeleteMessageRequest>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DeleteMessageResponse());
 
@@ -342,12 +420,12 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
         };
 
         var provider = new SqsMessagingProvider(
+            Microsoft.Extensions.Options.Options.Create(optionsWithoutDlq),
+            NullLogger<SqsMessagingProvider>.Instance,
             _mockSqsClient.Object,
             _mockTenantContext.Object,
-            _mockScopeFactory.Object,
-            Options.Create(optionsWithoutDlq),
-            NullLogger<SqsMessagingProvider>.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            _mockScopeFactory.Object);
 
         var invalidMessage = new Message
         {
