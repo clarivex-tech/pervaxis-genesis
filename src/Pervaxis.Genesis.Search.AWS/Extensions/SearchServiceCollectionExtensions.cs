@@ -18,7 +18,11 @@
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using OpenSearch.Client;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Search.AWS.Options;
 using Pervaxis.Genesis.Search.AWS.Providers.OpenSearch;
 
@@ -29,6 +33,8 @@ namespace Pervaxis.Genesis.Search.AWS.Extensions;
 /// </summary>
 public static class SearchServiceCollectionExtensions
 {
+    internal const string ClientServiceKey = "Genesis.Search";
+
     /// <summary>
     /// Adds AWS OpenSearch services to the service collection using configuration.
     /// </summary>
@@ -43,9 +49,7 @@ public static class SearchServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<SearchOptions>(configuration);
-        services.AddSingleton<ISearch, OpenSearchProvider>();
-
-        return services;
+        return RegisterProvider(services);
     }
 
     /// <summary>
@@ -62,7 +66,20 @@ public static class SearchServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        services.AddSingleton<ISearch, OpenSearchProvider>();
+        return RegisterProvider(services);
+    }
+
+    private static IServiceCollection RegisterProvider(IServiceCollection services)
+    {
+        services.AddKeyedSingleton<ConnectionSettings>(ClientServiceKey, (sp, _) =>
+            OpenSearchProvider.CreateSettings(sp.GetRequiredService<IOptions<SearchOptions>>().Value));
+        services.AddKeyedSingleton<IOpenSearchClient>(ClientServiceKey, (sp, _) =>
+            new OpenSearchClient(sp.GetRequiredKeyedService<ConnectionSettings>(ClientServiceKey)));
+        services.AddScoped<ISearch>(sp => new OpenSearchProvider(
+            sp.GetRequiredService<IOptions<SearchOptions>>(),
+            sp.GetRequiredService<ILogger<OpenSearchProvider>>(),
+            sp.GetRequiredKeyedService<IOpenSearchClient>(ClientServiceKey),
+            sp.GetService<ITenantContext>()));
 
         return services;
     }
