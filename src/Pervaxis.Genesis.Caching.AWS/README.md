@@ -25,6 +25,13 @@ registration, key handling and TTL behavior remain in effect until PR 2 integrat
 the resolver and verifies cross-tenant behavior, scoped DI and TTL enforcement.
 Do not treat this resolver-only change as completed provider isolation.
 
+Phase 1 covers only the existing cache interface: get, set, remove, exists,
+batch get/set and expiry refresh. TTL queries, counters/increment,
+set-if-not-exists, locks, search/scan/delete-by-pattern, tags/sets, pub/sub and
+Lua are outside that interface and remain follow-ups. No prefix-search API is
+added here; any future search must escape Redis glob characters in literal
+prefixes and verify tenant ownership of every returned key.
+
 ## Installation
 
 ```xml
