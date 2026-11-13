@@ -21,6 +21,7 @@ using Amazon.SQS.Model;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 using Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
@@ -50,7 +51,16 @@ public class SqsMessagingProviderTests
     }
 
     private SqsMessagingProvider CreateProvider(MessagingOptions? options = null) =>
-        new(MsOptions.Create(options ?? _options), _mockLogger.Object, _mockSqs.Object);
+        new(MsOptions.Create(options ?? _options), _mockLogger.Object, _mockSqs.Object, ResolvedTenant());
+    // Phase 1A: publish fails closed without a resolved tenant, so the fixture always supplies one.
+    private static ITenantContext ResolvedTenant(string tenantId = "acme")
+    {
+        var tenant = new Mock<ITenantContext>();
+        tenant.Setup(t => t.IsResolved).Returns(true);
+        tenant.Setup(t => t.TenantId).Returns(new TenantId(tenantId));
+        tenant.Setup(t => t.TenantName).Returns($"{tenantId}-corp");
+        return tenant.Object;
+    }
 
     private sealed record TestMessage(int Id, string Text);
 
@@ -136,11 +146,13 @@ public class SqsMessagingProviderTests
         }
 
         [Fact]
-        public async Task UsesDefaultQueueUrl_WhenNoMapping()
+        public async Task UsesSharedQueueOnDefaultAccount_WhenNoMapping()
         {
+            // Phase 1A: an unmapped destination resolves to the shared queue "{destination}-shared"
+            // on the account/region taken from DefaultQueueUrl, not to DefaultQueueUrl itself.
             _mockSqs
                 .Setup(s => s.SendMessageAsync(
-                    It.Is<SendMessageRequest>(r => r.QueueUrl == _options.Sqs.DefaultQueueUrl),
+                    It.Is<SendMessageRequest>(r => r.QueueUrl == "https://sqs.ap-south-1.amazonaws.com/123/unknown-destination-shared"),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new SendMessageResponse { MessageId = "msg-default" });
 
@@ -241,7 +253,16 @@ public class SqsMessagingProviderTests
                 .Setup(s => s.ReceiveMessageAsync(It.IsAny<ReceiveMessageRequest>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ReceiveMessageResponse
                 {
-                    Messages = [new Message { Body = body, ReceiptHandle = "rh-1" }]
+                    // Phase 1B: consumers require the tenant attribute; without it the message is dead-lettered.
+                    Messages = [new Message
+                    {
+                        Body = body,
+                        ReceiptHandle = "rh-1",
+                        MessageAttributes = new Dictionary<string, MessageAttributeValue>
+                        {
+                            ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = "acme" }
+                        }
+                    }]
                 });
 
             var result = (await CreateProvider().ReceiveAsync<TestMessage>("orders")).ToList();
