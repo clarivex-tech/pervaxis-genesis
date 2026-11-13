@@ -6,6 +6,32 @@ AWS ElastiCache (Redis) caching provider for the Pervaxis Genesis platform.
 
 `Pervaxis.Genesis.Caching.AWS` implements the `ICache` abstraction from `Pervaxis.Core.Abstractions` using [StackExchange.Redis](https://stackexchange.github.io/StackExchange.Redis/) as the Redis client. It supports AWS ElastiCache clusters and local Redis instances (including LocalStack).
 
+## Tenant isolation foundation (PR 1)
+
+The internal `TenantCacheKeyResolver` provides keys in the form
+`tenants:{tenantId}:{key}`, consistent with S3's plural `tenants/{tenantId}/`
+namespace. This is **app-enforced**, not IAM-enforced isolation on a shared
+Redis cluster. It has no platform scope or unresolved-tenant fallback.
+
+The resolver reads `ITenantContext` on each call and uses the shared
+`TenantIdValidator`. It rejects empty or whitespace-only keys, control characters,
+Redis Cluster hash-tag braces, caller-supplied `tenants:` namespaces, invalid
+Unicode, and total keys exceeding 1,024 UTF-8 bytes. Logical keys otherwise stay
+literal, including `..`, glob characters and percent sequences. Prefix stripping
+checks the complete tenant boundary before returning a logical key.
+
+This foundation is not yet wired into the provider. The existing provider's
+registration, key handling and TTL behavior remain in effect until PR 2 integrates
+the resolver and verifies cross-tenant behavior, scoped DI and TTL enforcement.
+Do not treat this resolver-only change as completed provider isolation.
+
+Phase 1 covers only the existing cache interface: get, set, remove, exists,
+batch get/set and expiry refresh. TTL queries, counters/increment,
+set-if-not-exists, locks, search/scan/delete-by-pattern, tags/sets, pub/sub and
+Lua are outside that interface and remain follow-ups. No prefix-search API is
+added here; any future search must escape Redis glob characters in literal
+prefixes and verify tenant ownership of every returned key.
+
 ## Installation
 
 ```xml
