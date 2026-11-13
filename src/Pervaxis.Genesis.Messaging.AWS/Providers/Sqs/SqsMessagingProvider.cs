@@ -107,6 +107,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     /// <param name="options">Messaging configuration options.</param>
     /// <param name="logger">Logger instance.</param>
     /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
+    /// <param name="tenantScopeFactory">Optional tenant scope factory. Required by <c>ProcessAsync</c> to run each message under its own tenant.</param>
     /// <param name="environment">Optional environment name for validation (defaults to Production).</param>
     /// <param name="timeProvider">Optional time provider for testing (defaults to system time).</param>
     public SqsMessagingProvider(
@@ -151,7 +152,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         ILogger<SqsMessagingProvider> logger,
         IAmazonSQS sqsClient,
         ITenantContext? tenantContext = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ITenantScopeFactory? tenantScopeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -160,6 +162,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _tenantScopeFactory = tenantScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
         ValidateOptions("Test"); // Internal constructor always allows disabled isolation
@@ -427,14 +430,14 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 async ct => await _sqsClient.Value.ReceiveMessageAsync(request, ct).ConfigureAwait(false),
                 cancellationToken);
 
-            activity?.SetTag("messaging.message_count", response.Messages.Count);
+            activity?.SetTag("messaging.message_count", (response.Messages?.Count ?? 0));
             _logger.LogDebug(
                 "Received {Count} messages from SQS queue {QueueUrl}",
-                response.Messages.Count, queueUrl);
+                (response.Messages?.Count ?? 0), queueUrl);
 
             // Phase 1B: Process messages with tenant isolation validation
             var result = new List<T>();
-            foreach (var message in response.Messages)
+            foreach (var message in response.Messages ?? [])
             {
                 var deserialized = Deserialize<T>(message.Body);
                 if (deserialized is null)
@@ -671,6 +674,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         string queue,
         int maxMessages = 10,
         CancellationToken cancellationToken = default)
+        where T : notnull
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.receive_with_metadata", ActivityKind.Consumer);
@@ -699,10 +703,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 async ct => await _sqsClient.Value.ReceiveMessageAsync(request, ct).ConfigureAwait(false),
                 cancellationToken);
 
-            activity?.SetTag("messaging.message_count", response.Messages.Count);
+            activity?.SetTag("messaging.message_count", (response.Messages?.Count ?? 0));
 
             var result = new List<ReceivedMessage<T>>();
-            foreach (var message in response.Messages)
+            foreach (var message in response.Messages ?? [])
             {
                 var deserialized = Deserialize<T>(message.Body);
                 if (deserialized is null)
@@ -796,11 +800,14 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     /// <param name="maxMessages">Maximum number of messages to receive (1-10, default 10).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Task representing the async operation.</returns>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Per-message isolation by design: one failing handler is logged and left for SQS redelivery so the other messages still process.")]
     public async Task ProcessAsync<T>(
         string queue,
         Func<T, Task> handler,
         int maxMessages = 10,
         CancellationToken cancellationToken = default)
+        where T : notnull
     {
         ArgumentNullException.ThrowIfNull(handler);
 
@@ -1203,7 +1210,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     private (bool IsValid, string? TenantId, string? FailureReason) ValidateAndExtractTenantId(Message message)
     {
         // Check if pervaxis_tenant_id attribute exists
-        if (!message.MessageAttributes.TryGetValue(MessagingConstants.TenantIdAttribute, out var tenantIdAttr))
+        if (message.MessageAttributes is null || !message.MessageAttributes.TryGetValue(MessagingConstants.TenantIdAttribute, out var tenantIdAttr))
         {
             _logger.LogWarning(
                 "Message {MessageId} is missing required attribute {AttributeName}",
@@ -1266,7 +1273,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             {
                 QueueUrl = _options.Sqs.DlqUrl,
                 MessageBody = originalMessage.Body,
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>(originalMessage.MessageAttributes)
+                MessageAttributes = new Dictionary<string, MessageAttributeValue>(originalMessage.MessageAttributes ?? new Dictionary<string, MessageAttributeValue>())
                 {
                     [MessagingConstants.FailureReasonAttribute] = new MessageAttributeValue
                     {
@@ -1294,6 +1301,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     /// <summary>
     /// Phase 1B: Deletes a message from the queue after processing or DLQ routing.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Best-effort cleanup: a failed delete is logged and the message becomes visible again for redelivery.")]
     private async Task DeleteMessageAsync(string queueUrl, string receiptHandle, CancellationToken cancellationToken)
     {
         try

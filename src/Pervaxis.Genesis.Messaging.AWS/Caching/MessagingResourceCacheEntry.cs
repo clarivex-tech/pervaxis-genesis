@@ -35,6 +35,8 @@ public sealed class MessagingResourceCacheEntry
     /// <param name="timeProvider">Time provider for testable expiration checks.</param>
     public MessagingResourceCacheEntry(string value, TimeSpan ttl, TimeProvider timeProvider)
     {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
         Value = value;
         Ttl = ttl;
         _timeProvider = timeProvider;

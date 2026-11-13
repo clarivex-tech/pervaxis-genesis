@@ -32,7 +32,8 @@ namespace Pervaxis.Genesis.Base.Validation;
 /// - Length: 3-63 characters (AWS naming constraints)
 /// - No consecutive hyphens (..)
 /// - Reserved words rejected: platform, tenant, admin, system, root, default
-/// - Reserved substrings rejected: -tenant-, -admin-, -system-
+/// - Reserved substrings rejected: -tenant-, -admin-, -system-, -platform-, -root-
+///   (hyphens on both sides, so a suffix such as "acme-platform" is allowed)
 /// 
 /// Note: This validator supports both GUID-based tenant IDs from Cognito (e.g., 3f2504e0-4f89-41d3-9a0c-0305e82c3301)
 /// and human-readable IDs (e.g., acme-corp).
@@ -153,7 +154,7 @@ public static class TenantIdValidator
 /// <summary>
 /// Validation result with success flag and optional error message.
 /// </summary>
-public readonly struct ValidationResult
+public readonly struct ValidationResult : IEquatable<ValidationResult>
 {
     /// <summary>
     /// Gets a value indicating whether the validation succeeded.
@@ -180,4 +181,20 @@ public readonly struct ValidationResult
     /// Creates a failed validation result with an error message.
     /// </summary>
     public static ValidationResult Failure(string errorMessage) => new(false, errorMessage);
+
+    /// <inheritdoc />
+    public bool Equals(ValidationResult other) =>
+        IsValid == other.IsValid && string.Equals(ErrorMessage, other.ErrorMessage, StringComparison.Ordinal);
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj) => obj is ValidationResult other && Equals(other);
+
+    /// <inheritdoc />
+    public override int GetHashCode() => HashCode.Combine(IsValid, ErrorMessage);
+
+    /// <summary>Determines whether two results are equal.</summary>
+    public static bool operator ==(ValidationResult left, ValidationResult right) => left.Equals(right);
+
+    /// <summary>Determines whether two results are not equal.</summary>
+    public static bool operator !=(ValidationResult left, ValidationResult right) => !left.Equals(right);
 }

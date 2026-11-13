@@ -21,6 +21,7 @@ using Amazon.SimpleNotificationService.Model;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 using Pervaxis.Genesis.Messaging.AWS.Providers.Sns;
@@ -50,7 +51,16 @@ public class SnsMessagingProviderTests
     }
 
     private SnsMessagingProvider CreateProvider(MessagingOptions? options = null) =>
-        new(MsOptions.Create(options ?? _options), _mockLogger.Object, _mockSns.Object);
+        new(MsOptions.Create(options ?? _options), _mockLogger.Object, _mockSns.Object, ResolvedTenant());
+    // Phase 1A: publish fails closed without a resolved tenant, so the fixture always supplies one.
+    private static ITenantContext ResolvedTenant(string tenantId = "acme")
+    {
+        var tenant = new Mock<ITenantContext>();
+        tenant.Setup(t => t.IsResolved).Returns(true);
+        tenant.Setup(t => t.TenantId).Returns(new TenantId(tenantId));
+        tenant.Setup(t => t.TenantName).Returns($"{tenantId}-corp");
+        return tenant.Object;
+    }
 
     private sealed record TestEvent(string EventType, string Payload);
 

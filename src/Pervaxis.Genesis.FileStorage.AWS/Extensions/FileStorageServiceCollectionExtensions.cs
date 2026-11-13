@@ -16,12 +16,16 @@
  ************************************************************************
  */
 
+using Amazon.S3;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.FileStorage.AWS.Options;
-// TODO: Step 2 - Re-enable after S3FileStorageProvider is implemented
-// using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
+using Pervaxis.Genesis.FileStorage.AWS.Providers.S3;
+using Pervaxis.Genesis.FileStorage.AWS.Security;
 
 namespace Pervaxis.Genesis.FileStorage.AWS.Extensions;
 
@@ -44,8 +48,7 @@ public static class FileStorageServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<FileStorageOptions>(configuration);
-        // TODO: Step 2 - Re-enable after S3FileStorageProvider is implemented
-        // services.AddSingleton<IFileStorage, S3FileStorageProvider>();
+        RegisterServices(services);
 
         return services;
     }
@@ -64,9 +67,29 @@ public static class FileStorageServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        // TODO: Step 2 - Re-enable after S3FileStorageProvider is implemented
-        // services.AddSingleton<IFileStorage, S3FileStorageProvider>();
+        RegisterServices(services);
 
         return services;
+    }
+
+    private static void RegisterServices(IServiceCollection services)
+    {
+        // The S3 client is thread-safe and expensive to create, so it is a Singleton shared by all scopes.
+        // It is keyed so it cannot collide with another module's unkeyed IAmazonS3 registration
+        // (TransactionalLogging registers one with default settings), which would otherwise
+        // silently override this module's region and emulator configuration.
+        services.AddKeyedSingleton<IAmazonS3>(
+            FileStorageConstants.S3ClientServiceKey,
+            static (sp, _) => S3ClientFactory.Create(sp.GetRequiredService<IOptions<FileStorageOptions>>().Value));
+
+        // TenantKeyResolver must be Scoped because it reads the per-request ITenantContext.
+        // Isolation flag comes from options so the resolver and the provider can never disagree.
+        services.AddScoped<TenantKeyResolver>(static sp => new TenantKeyResolver(
+            sp.GetService<ITenantContext>(),
+            sp.GetRequiredService<ILogger<TenantKeyResolver>>(),
+            sp.GetRequiredService<IOptions<FileStorageOptions>>().Value.EnableTenantIsolation));
+
+        // S3FileStorageProvider must be Scoped so a captured tenant context can never serve another tenant.
+        services.AddScoped<IFileStorage, S3FileStorageProvider>();
     }
 }
