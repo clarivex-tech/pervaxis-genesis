@@ -2,11 +2,14 @@
 
 AWS ElastiCache (Redis) caching provider for the Pervaxis Genesis platform.
 
+See [release notes](./RELEASE_NOTES.md) for the cold-cache rollout, TTL defaults,
+and required major version bump to 2.0.0 before publishing.
+
 ## Overview
 
 `Pervaxis.Genesis.Caching.AWS` implements the `ICache` abstraction from `Pervaxis.Core.Abstractions` using [StackExchange.Redis](https://stackexchange.github.io/StackExchange.Redis/) as the Redis client. It supports AWS ElastiCache clusters and local Redis instances (including LocalStack).
 
-## Tenant isolation foundation (PR 1)
+## Tenant isolation
 
 The internal `TenantCacheKeyResolver` provides keys in the form
 `tenants:{tenantId}:{key}`, consistent with S3's plural `tenants/{tenantId}/`
@@ -20,10 +23,22 @@ Unicode, and total keys exceeding 1,024 UTF-8 bytes. Logical keys otherwise stay
 literal, including `..`, glob characters and percent sequences. Prefix stripping
 checks the complete tenant boundary before returning a logical key.
 
-This foundation is not yet wired into the provider. The existing provider's
-registration, key handling and TTL behavior remain in effect until PR 2 integrates
-the resolver and verifies cross-tenant behavior, scoped DI and TTL enforcement.
-Do not treat this resolver-only change as completed provider isolation.
+All seven provider operations use the resolver. A resolved tenant is required,
+including for empty bulk calls; the legacy `EnableTenantIsolation` flag cannot
+disable this requirement. The first operation binds the provider to its tenant.
+Every subsequent operation rejects a changed or unresolved tenant before Redis
+access. Bulk writes validate every key before queuing commands.
+
+This changes the key namespace from `tenant:{tenantId}:` to
+`tenants:{tenantId}:`. Existing entries will miss and expire under their original
+TTL; there is no fallback to the old namespace. Logical keys are preserved instead
+of being sanitized. A configured environment prefix still precedes the tenant
+namespace, for example `prod:tenants:acme:products:42`.
+
+`DefaultExpiry` and `MaxTtl` must be positive, and the default must not exceed
+the maximum. Set, bulk set and refresh reject explicit TTLs outside
+`0 < expiry <= MaxTtl`; omitted TTLs use the default. Each Redis SET includes
+its expiry in the same command.
 
 Phase 1 covers only the existing cache interface: get, set, remove, exists,
 batch get/set and expiry refresh. TTL queries, counters/increment,
@@ -54,6 +69,7 @@ prefixes and verify tenant ownership of every returned key.
     "Region": "ap-south-1",
     "UseSsl": true,
     "DefaultExpiry": "01:00:00",
+    "MaxTtl": "1.00:00:00",
     "KeyPrefix": "myapp",
     "Database": 0,
     "ConnectTimeoutMs": 5000,
@@ -70,7 +86,8 @@ prefixes and verify tenant ownership of every returned key.
 | `ConnectionString` | `string` | *(required)* | Redis endpoint (e.g. `host:port`) |
 | `Region` | `string` | *(required)* | AWS region (e.g. `ap-south-1`) |
 | `UseSsl` | `bool` | `true` | Enable TLS — required for ElastiCache in-transit encryption |
-| `DefaultExpiry` | `TimeSpan` | `01:00:00` | Default TTL when no expiry is specified |
+| `DefaultExpiry` | `TimeSpan` | `01:00:00` | Positive default TTL, no greater than MaxTtl |
+| `MaxTtl` | `TimeSpan` | `1.00:00:00` | Maximum TTL for set, bulk set and refresh |
 | `KeyPrefix` | `string` | `""` | Prefix prepended to every key as `{prefix}:{key}` |
 | `Database` | `int` | `0` | Redis logical database index |
 | `ConnectTimeoutMs` | `int` | `5000` | Connection timeout in milliseconds |
@@ -160,7 +177,12 @@ builder.Services.AddGenesisCaching(options =>
 });
 ```
 
-The provider is registered as a **Singleton** (`ICache → ElastiCacheProvider`). The underlying Redis connection uses `Lazy<IConnectionMultiplexer>` so it is created on first use.
+The provider (`ICache` implemented by `ElastiCacheProvider`) and
+`TenantCacheKeyResolver` are registered as **Scoped**. Resolve the provider inside
+a DI scope with a resolved `ITenantContext`. The container owns a **Singleton**
+`IConnectionMultiplexer`, created when first resolved. Disposing a provider scope
+leaves the shared connection open; container disposal closes it. Direct
+construction now requires an externally owned connection.
 
 ## Usage
 
