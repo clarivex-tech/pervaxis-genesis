@@ -672,7 +672,8 @@ public sealed class S3FileStorageProvider : IFileStorage, IDisposable
                     async ct => await _s3Client.Value.ListObjectsV2Async(request, ct),
                     cancellationToken);
 
-                keys.AddRange(response.S3Objects.Select(obj =>
+                // AWS SDK v4 returns S3Objects == null (not empty) when the listing has no objects.
+                keys.AddRange((response.S3Objects ?? []).Select(obj =>
                     RemoveKeyPrefix(obj.Key)));
 
                 request.ContinuationToken = response.NextContinuationToken;

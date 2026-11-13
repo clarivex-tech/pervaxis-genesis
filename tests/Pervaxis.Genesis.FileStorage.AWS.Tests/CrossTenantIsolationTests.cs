@@ -402,6 +402,40 @@ public sealed class CrossTenantIsolationTests
     }
 
     [Fact]
+    public async Task List_EmptyListingWithNullS3Objects_ReturnsEmpty()
+    {
+        // AWS SDK v4 returns S3Objects == null (not an empty list) when nothing matches the prefix.
+        var s3 = new Mock<IAmazonS3>();
+        s3.Setup(x => x.ListObjectsV2Async(It.IsAny<ListObjectsV2Request>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ListObjectsV2Response { S3Objects = null, IsTruncated = false });
+
+        var files = await Provider(s3.Object, TenantA).ListAsync();
+
+        files.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task List_PageWithNullS3Objects_IsSkippedAndPagingContinues()
+    {
+        var s3 = new Mock<IAmazonS3>();
+        var pages = new Queue<ListObjectsV2Response>(new[]
+        {
+            new ListObjectsV2Response { S3Objects = null, IsTruncated = true, NextContinuationToken = "page-2" },
+            new ListObjectsV2Response
+            {
+                S3Objects = new List<S3Object> { new() { Key = KeyOf(TenantA, "late.pdf") } },
+                IsTruncated = false
+            }
+        });
+        s3.Setup(x => x.ListObjectsV2Async(It.IsAny<ListObjectsV2Request>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => pages.Dequeue());
+
+        var files = await Provider(s3.Object, TenantA).ListAsync();
+
+        files.Should().BeEquivalentTo("late.pdf");
+    }
+
+    [Fact]
     public async Task List_ContinuationPages_EveryPageRequestKeepsTenantPrefix()
     {
         var s3 = new Mock<IAmazonS3>();
