@@ -32,7 +32,8 @@ namespace Pervaxis.Genesis.Base.Validation;
 /// - Length: 3-63 characters (AWS naming constraints)
 /// - No consecutive hyphens (..)
 /// - Reserved words rejected: platform, tenant, admin, system, root, default
-/// - Reserved substrings rejected: -tenant-, -admin-, -system-
+/// - Reserved substrings rejected: -tenant-, -admin-, -system-, -platform-, -root-
+///   (hyphens on both sides, so a suffix such as "acme-platform" is allowed)
 /// 
 /// Note: This validator supports both GUID-based tenant IDs from Cognito (e.g., 3f2504e0-4f89-41d3-9a0c-0305e82c3301)
 /// and human-readable IDs (e.g., acme-corp).
