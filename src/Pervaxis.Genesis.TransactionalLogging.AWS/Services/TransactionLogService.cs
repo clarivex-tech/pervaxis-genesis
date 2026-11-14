@@ -5,6 +5,9 @@
  ************************************************************************
  */
 
+using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Genesis.Base.MultiTenancy;
+using Pervaxis.Genesis.Base.Exceptions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
@@ -21,6 +24,7 @@ namespace Pervaxis.Genesis.TransactionalLogging.AWS.Services;
 internal sealed class TransactionLogService : ITransactionLog
 {
     private readonly TransactionContextAccessor _contextAccessor;
+    private readonly ITenantContext? _tenantContext;
     private readonly ITransactionLogStore _store;
     private readonly TransactionalLoggingOptions _options;
     private readonly ILogger<TransactionLogService> _logger;
@@ -29,7 +33,8 @@ internal sealed class TransactionLogService : ITransactionLog
         TransactionContextAccessor contextAccessor,
         ITransactionLogStore store,
         IOptions<TransactionalLoggingOptions> options,
-        ILogger<TransactionLogService> logger)
+        ILogger<TransactionLogService> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(contextAccessor);
         ArgumentNullException.ThrowIfNull(store);
@@ -40,6 +45,7 @@ internal sealed class TransactionLogService : ITransactionLog
         _store = store;
         _options = options.Value;
         _logger = logger;
+        _tenantContext = tenantContext;
     }
 
     /// <inheritdoc/>
@@ -52,6 +58,7 @@ internal sealed class TransactionLogService : ITransactionLog
         if (!_options.Enabled)
             return Task.FromResult(string.Empty);
 
+        tenantId = TenantIsolation.RequireTenant(_tenantContext, tenantId);
         var context = new TransactionContext
         {
             TenantId = tenantId,
@@ -73,12 +80,12 @@ internal sealed class TransactionLogService : ITransactionLog
             return Task.CompletedTask;
 
         var context = _contextAccessor.Current;
-        if (context is null)
+        if (context is null || context.TransactionId != transactionId)
         {
-            context = new TransactionContext();
-            _contextAccessor.Current = context;
+            throw new GenesisException(nameof(TransactionLogService),
+                "No matching transaction is active in this scope.", "TRANSACTION_MISMATCH", null);
         }
-
+        TenantIsolation.RequireTenant(_tenantContext, context.TenantId);
         context.AddEntry(entry);
         return Task.CompletedTask;
     }
@@ -97,6 +104,12 @@ internal sealed class TransactionLogService : ITransactionLog
         if (context is null)
             return;
 
+        TenantIsolation.RequireTenant(_tenantContext, context.TenantId);
+        if (context.TransactionId != transactionId)
+        {
+            throw new GenesisException(nameof(TransactionLogService),
+                "No matching transaction is active in this scope.", "TRANSACTION_MISMATCH", null);
+        }
         context.Finalize(null, status);
 
         try
@@ -123,6 +136,7 @@ internal sealed class TransactionLogService : ITransactionLog
         if (!_options.Enabled)
             return Task.FromResult<TransactionLogResult?>(null);
 
+        TenantIsolation.RequireTenant(_tenantContext);
         // Delegate to store query — returns null if not found
         return Task.FromResult<TransactionLogResult?>(null);
     }
@@ -139,6 +153,7 @@ internal sealed class TransactionLogService : ITransactionLog
         if (!_options.Enabled)
             return Task.FromResult<IReadOnlyList<TransactionLogResult>>(Array.Empty<TransactionLogResult>());
 
+        TenantIsolation.RequireTenant(_tenantContext, tenantId);
         // Delegate to store query
         return Task.FromResult<IReadOnlyList<TransactionLogResult>>(Array.Empty<TransactionLogResult>());
     }

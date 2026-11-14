@@ -43,8 +43,7 @@ public sealed class NotificationOptions : GenesisOptionsBase
     public string? ConfigurationSetName { get; set; }
 
     /// <summary>
-    /// SNS topic ARN for SMS notifications.
-    /// Required if sending SMS messages.
+    /// Legacy setting retained for configuration compatibility. SMS sends target the supplied phone number.
     /// </summary>
     public string? SmsTopicArn { get; set; }
 
@@ -67,9 +66,8 @@ public sealed class NotificationOptions : GenesisOptionsBase
     public int RequestTimeoutSeconds { get; set; } = 30;
 
     /// <summary>
-    /// Gets or sets a value indicating whether to enable tenant isolation.
-    /// When enabled, notifications include tenant metadata for tracking.
-    /// Default is true.
+    /// Legacy setting retained for configuration compatibility.
+    /// A resolved tenant and tenant metadata are always required for sends.
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
 

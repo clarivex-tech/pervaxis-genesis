@@ -5,6 +5,8 @@
  ************************************************************************
  */
 
+using Pervaxis.Genesis.Base.MultiTenancy;
+using Pervaxis.Genesis.Base.Exceptions;
 using System.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -63,11 +65,21 @@ public sealed class TransactionLoggingMiddleware
         var store = httpContext.RequestServices.GetRequiredService<ITransactionLogStore>();
         var tenantContext = httpContext.RequestServices.GetService<ITenantContext>();
 
+        string tenantId;
+        try
+        {
+            tenantId = TenantIsolation.RequireTenant(tenantContext);
+        }
+        catch (GenesisException)
+        {
+            // Non-tenant endpoints continue without writing into a shared/global partition.
+            await _next(httpContext);
+            return;
+        }
         var context = new TransactionContext
         {
             TraceId = Activity.Current?.TraceId.ToString(),
-            TenantId = tenantContext?.IsResolved == true
-                ? tenantContext.TenantId.Value.ToString() : null,
+            TenantId = tenantId,
             HttpMethod = httpContext.Request.Method,
             RequestPath = httpContext.Request.Path.Value,
             IdempotencyKey = httpContext.Request.Headers["Idempotency-Key"].FirstOrDefault(),
@@ -97,7 +109,7 @@ public sealed class TransactionLoggingMiddleware
                 _logger, context.TransactionId, context.Entries.Count,
                 context.DurationMs ?? 0, context.Status.ToString());
 
-            _ = PersistSafelyAsync(store, context);
+            await PersistSafelyAsync(store, context);
         }
     }
 

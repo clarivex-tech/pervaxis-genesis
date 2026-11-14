@@ -89,8 +89,8 @@ public static class TransactionalLoggingServiceCollectionExtensions
         services.TryAddSingleton<IAmazonS3, AmazonS3Client>();
 
         // Storage
-        services.TryAddSingleton<S3OverflowStore>();
-        services.TryAddSingleton<ITransactionLogStore, DynamoDbTransactionLogStore>();
+        services.TryAddScoped<S3OverflowStore>();
+        services.TryAddScoped<ITransactionLogStore, DynamoDbTransactionLogStore>();
 
         // Sanitizer
         services.TryAddSingleton<ParameterSanitizer>();

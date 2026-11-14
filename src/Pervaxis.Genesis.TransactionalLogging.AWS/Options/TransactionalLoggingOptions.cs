@@ -89,8 +89,7 @@ public sealed class TransactionalLoggingOptions : GenesisOptionsBase
     public int ColdRetentionDays { get; set; } = 2555;
 
     /// <summary>
-    /// Gets or sets whether to enable tenant isolation in storage keys.
-    /// Default: true.
+    /// Legacy configuration setting. Tenant validation and tenant storage keys are always enforced.
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
 
