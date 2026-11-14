@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Basic shared-resource tenancy
+
+- Notifications require tenant context and stamp every SES/SNS send. Providers are
+  Scoped with shared SDK clients; SMS always targets the requested phone number.
+- Idempotency validates tenant arguments and record ownership through a Scoped
+  store wrapping a shared backend. The HTTP filter rejects missing tenant context.
+- Transaction logging requires tenant-owned DynamoDB/S3 keys, constrains lookup
+  requests, and awaits HTTP persistence within the tenant scope. Unresolved HTTP
+  requests skip logging; existing read API placeholders remain deferred.
+- Feature managers and snapshots evaluate shared definitions within tenant scopes.
+- **Breaking:** callers must establish trusted tenant scopes; legacy isolation
+  switches cannot disable these boundaries. Notification recipient authorization
+  remains the application's responsibility. See the package tenancy sections.
+
 ### Messaging (`Pervaxis.Genesis.Messaging.AWS`): shared-resource tenant enforcement
 
 - SQS/SNS providers are Scoped and use keyed, container-owned Singleton AWS clients.

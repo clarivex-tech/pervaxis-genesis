@@ -1,5 +1,21 @@
 # Pervaxis.Genesis.Notifications.AWS
 
+## Shared resource tenancy
+
+Register a trusted, scoped `ITenantContext` before sending. The notification provider
+is Scoped; SES/SNS clients are shared Singletons owned by the container. Resolve it
+inside a tenant scope, including background jobs.
+
+Every send requires a resolved, valid tenant, even when the legacy
+`EnableTenantIsolation` setting is false. Email and template sends carry a SES
+`TenantId` tag; SMS and push sends carry the SNS `pervaxis_tenant_id` attribute.
+Sender identities, templates and platform applications can remain shared.
+
+SMS targets the supplied phone number directly. The legacy `SmsTopicArn` setting
+is ignored to avoid broadcasting a tenant's message to shared topic subscribers.
+The application must authorize recipients and device tokens for the current tenant;
+tenant tags provide attribution and do not establish recipient ownership.
+
 AWS-based notification provider for the Pervaxis Genesis platform. Supports email (Amazon SES), SMS, and push notifications (Amazon SNS).
 
 ## Features

@@ -16,6 +16,8 @@
  ************************************************************************
  */
 
+using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Genesis.Base.MultiTenancy;
 using System.IO.Compression;
 using System.Text.Json;
 using Amazon.S3;
@@ -35,6 +37,7 @@ internal sealed class S3OverflowStore : IDisposable
 {
     private readonly IAmazonS3 _s3Client;
     private readonly TransactionalLoggingOptions _options;
+    private readonly ITenantContext? _tenantContext;
     private readonly ILogger<S3OverflowStore> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -49,7 +52,8 @@ internal sealed class S3OverflowStore : IDisposable
     public S3OverflowStore(
         IAmazonS3 s3Client,
         IOptions<TransactionalLoggingOptions> options,
-        ILogger<S3OverflowStore> logger)
+        ILogger<S3OverflowStore> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(s3Client);
         ArgumentNullException.ThrowIfNull(options);
@@ -57,6 +61,7 @@ internal sealed class S3OverflowStore : IDisposable
 
         _s3Client = s3Client;
         _options = options.Value;
+        _tenantContext = tenantContext;
         _logger = logger;
     }
 
@@ -68,9 +73,8 @@ internal sealed class S3OverflowStore : IDisposable
     /// <returns>The S3 object key.</returns>
     public async Task<string> WriteOverflowAsync(TransactionContext context, CancellationToken cancellationToken = default)
     {
-        var tenantId = _options.EnableTenantIsolation
-            ? (context.TenantId ?? "__global__")
-            : "__global__";
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.TenantId);
+        var tenantId = TenantIsolation.RequireTenant(_tenantContext, context.TenantId);
 
         var timestamp = context.StartTimestamp;
         var s3Key = $"{tenantId}/{timestamp:yyyy}/{timestamp:MM}/{timestamp:dd}/{context.TransactionId}.json.gz";
@@ -127,6 +131,6 @@ internal sealed class S3OverflowStore : IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
-        _s3Client.Dispose();
+        // The DI container owns the shared AWS client.
     }
 }

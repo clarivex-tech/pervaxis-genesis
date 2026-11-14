@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,7 +15,15 @@ namespace Pervaxis.Genesis.TransactionalLogging.AWS.Tests.Unit.Middleware;
 public class TransactionLoggingMiddlewareTests
 {
     private readonly TransactionalLoggingOptions _options = new();
-    private readonly InMemoryTransactionLogStore _store = new();
+    private readonly ITenantContext _tenant = Substitute.For<ITenantContext>();
+    private readonly InMemoryTransactionLogStore _store;
+
+    public TransactionLoggingMiddlewareTests()
+    {
+        _tenant.IsResolved.Returns(true);
+        _tenant.TenantId.Returns(new TenantId("acme"));
+        _store = new InMemoryTransactionLogStore(_tenant);
+    }
     private readonly ILogger<TransactionLoggingMiddleware> _logger = Substitute.For<ILogger<TransactionLoggingMiddleware>>();
 
     private TransactionLoggingMiddleware CreateMiddleware(RequestDelegate next)
@@ -26,6 +35,7 @@ public class TransactionLoggingMiddlewareTests
     {
         var services = new ServiceCollection();
         services.AddScoped<TransactionContextAccessor>();
+        services.AddSingleton(_tenant);
         services.AddSingleton<ITransactionLogStore>(_store);
         var provider = services.BuildServiceProvider();
 
@@ -34,6 +44,21 @@ public class TransactionLoggingMiddlewareTests
         context.Request.Path = path;
         context.Request.Method = method;
         return context;
+    }
+
+    [Fact]
+    public async Task InvokeAsync_UnresolvedTenantContinuesWithoutGlobalLog()
+    {
+        _tenant.IsResolved.Returns(false);
+        var called = false;
+        var middleware = CreateMiddleware(_ =>
+        {
+            called = true;
+            return Task.CompletedTask;
+        });
+        await middleware.InvokeAsync(CreateHttpContext());
+        called.Should().BeTrue();
+        _store.Store.Should().BeEmpty();
     }
 
     [Fact]

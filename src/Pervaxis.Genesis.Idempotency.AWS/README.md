@@ -1,5 +1,17 @@
 # Pervaxis.Genesis.Idempotency.AWS
 
+## Shared resource tenancy
+
+The public `IIdempotencyStore` is Scoped and validates every operation against the
+trusted `ITenantContext`. Explicit tenant arguments and completed record keys must
+match that context. Missing, invalid or foreign tenants are rejected before storage.
+The shared backend and AWS client remain Singletons; records use tenant-prefixed
+keys so two tenants can use the same idempotency key independently.
+
+The legacy `EnableTenantIsolation` setting cannot disable these checks. The HTTP
+filter returns 403 when the tenant context is unavailable or invalid. Resolve the
+store in a tenant scope for background work as well.
+
 AWS DynamoDB idempotency store for the Pervaxis Genesis platform.
 
 ## Overview

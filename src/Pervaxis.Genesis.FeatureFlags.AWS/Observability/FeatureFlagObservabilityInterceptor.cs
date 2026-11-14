@@ -17,6 +17,7 @@
  */
 
 using System.Diagnostics;
+using Pervaxis.Genesis.Base.MultiTenancy;
 using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
@@ -32,7 +33,7 @@ namespace Pervaxis.Genesis.FeatureFlags.AWS.Observability;
 
 /// <summary>
 /// Decorates IFeatureManager to add Genesis observability (metrics, traces, state-change logging).
-/// Registered as a singleton wrapping the underlying feature manager.
+/// Registered as a scoped wrapper around the shared feature definitions.
 /// </summary>
 internal sealed partial class FeatureFlagObservabilityInterceptor : IFeatureManager
 {
@@ -82,6 +83,7 @@ internal sealed partial class FeatureFlagObservabilityInterceptor : IFeatureMana
     /// <inheritdoc/>
     public async Task<bool> IsEnabledAsync(string feature)
     {
+        TenantIsolation.RequireTenant(_tenantContext);
         WarnIfNonConforming(feature);
 
         var stopwatch = Stopwatch.StartNew();
@@ -114,6 +116,7 @@ internal sealed partial class FeatureFlagObservabilityInterceptor : IFeatureMana
     /// <inheritdoc/>
     public async Task<bool> IsEnabledAsync<TContext>(string feature, TContext context)
     {
+        TenantIsolation.RequireTenant(_tenantContext);
         WarnIfNonConforming(feature);
 
         var stopwatch = Stopwatch.StartNew();
@@ -145,7 +148,10 @@ internal sealed partial class FeatureFlagObservabilityInterceptor : IFeatureMana
 
     /// <inheritdoc/>
     public IAsyncEnumerable<string> GetFeatureNamesAsync()
-        => _inner.GetFeatureNamesAsync();
+    {
+        TenantIsolation.RequireTenant(_tenantContext);
+        return _inner.GetFeatureNamesAsync();
+    }
 
     private void RecordMetrics(string flagName, string result, Stopwatch stopwatch)
     {

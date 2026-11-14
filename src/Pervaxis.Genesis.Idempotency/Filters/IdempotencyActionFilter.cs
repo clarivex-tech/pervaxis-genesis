@@ -17,6 +17,8 @@
  */
 
 using System.Diagnostics.CodeAnalysis;
+using Pervaxis.Genesis.Base.MultiTenancy;
+using Pervaxis.Genesis.Base.Exceptions;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -100,7 +102,17 @@ internal sealed class IdempotencyActionFilter : IAsyncActionFilter
         }
 
         var idempotencyKey = keyValue!;
-        var tenantId = ResolveTenantId();
+        string tenantId;
+        try
+        {
+            tenantId = ResolveTenantId();
+        }
+        catch (GenesisException)
+        {
+            context.Result = CreateProblemResult(StatusCodes.Status403Forbidden,
+                "IDEMPOTENCY_TENANT_INVALID", "A valid resolved tenant is required for idempotency.");
+            return;
+        }
 
         // Validate tenant ID doesn't contain the composite key separator
         if (tenantId.Contains('#', StringComparison.Ordinal))
@@ -215,20 +227,7 @@ internal sealed class IdempotencyActionFilter : IAsyncActionFilter
         }
     }
 
-    private string ResolveTenantId()
-    {
-        if (!_options.EnableTenantIsolation)
-        {
-            return "__global__";
-        }
-
-        if (_tenantContext?.IsResolved == true)
-        {
-            return _tenantContext.TenantId.Value.ToString();
-        }
-
-        return "__global__";
-    }
+    private string ResolveTenantId() => TenantIsolation.RequireTenant(_tenantContext);
 
     private static async Task ReplayCachedResponseAsync(HttpContext httpContext, IdempotencyRecord record)
     {

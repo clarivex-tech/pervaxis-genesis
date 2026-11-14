@@ -16,6 +16,11 @@
  ************************************************************************
  */
 
+using Amazon.SimpleEmail;
+using Amazon.SimpleNotificationService;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
@@ -43,7 +48,16 @@ public static class NotificationServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<NotificationOptions>(configuration);
-        services.AddSingleton<INotification, AwsNotificationProvider>();
+        services.AddKeyedSingleton<IAmazonSimpleEmailService>("Genesis.Notifications.Ses", (sp, _) =>
+            AwsNotificationProvider.CreateSesClient(sp.GetRequiredService<IOptions<NotificationOptions>>().Value));
+        services.AddKeyedSingleton<IAmazonSimpleNotificationService>("Genesis.Notifications.Sns", (sp, _) =>
+            AwsNotificationProvider.CreateSnsClient(sp.GetRequiredService<IOptions<NotificationOptions>>().Value));
+        services.AddScoped<INotification>(sp => new AwsNotificationProvider(
+            sp.GetRequiredService<IOptions<NotificationOptions>>().Value,
+            sp.GetRequiredKeyedService<IAmazonSimpleEmailService>("Genesis.Notifications.Ses"),
+            sp.GetRequiredKeyedService<IAmazonSimpleNotificationService>("Genesis.Notifications.Sns"),
+            sp.GetRequiredService<ILogger<AwsNotificationProvider>>(),
+            sp.GetService<ITenantContext>()));
 
         return services;
     }
@@ -62,7 +76,16 @@ public static class NotificationServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        services.AddSingleton<INotification, AwsNotificationProvider>();
+        services.AddKeyedSingleton<IAmazonSimpleEmailService>("Genesis.Notifications.Ses", (sp, _) =>
+            AwsNotificationProvider.CreateSesClient(sp.GetRequiredService<IOptions<NotificationOptions>>().Value));
+        services.AddKeyedSingleton<IAmazonSimpleNotificationService>("Genesis.Notifications.Sns", (sp, _) =>
+            AwsNotificationProvider.CreateSnsClient(sp.GetRequiredService<IOptions<NotificationOptions>>().Value));
+        services.AddScoped<INotification>(sp => new AwsNotificationProvider(
+            sp.GetRequiredService<IOptions<NotificationOptions>>().Value,
+            sp.GetRequiredKeyedService<IAmazonSimpleEmailService>("Genesis.Notifications.Ses"),
+            sp.GetRequiredKeyedService<IAmazonSimpleNotificationService>("Genesis.Notifications.Sns"),
+            sp.GetRequiredService<ILogger<AwsNotificationProvider>>(),
+            sp.GetService<ITenantContext>()));
 
         return services;
     }
