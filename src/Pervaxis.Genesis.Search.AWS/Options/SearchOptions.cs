@@ -34,14 +34,12 @@ public sealed class SearchOptions : GenesisOptionsBase
 
     /// <summary>
     /// Optional index prefix for all indices (e.g., "prod-").
-    /// Note: For tenant isolation, use <see cref="EnableTenantIsolation"/> instead.
+    /// Shared environment prefix; tenant IDs are never added to index names.
     /// </summary>
     public string IndexPrefix { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets a value indicating whether to enable tenant isolation.
-    /// When enabled, index names are prefixed with tenant ID and documents include tenant field.
-    /// Default is true.
+    /// Legacy compatibility option. Tenant isolation is mandatory and cannot be disabled.
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
 

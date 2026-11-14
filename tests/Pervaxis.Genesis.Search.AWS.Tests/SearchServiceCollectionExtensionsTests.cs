@@ -20,6 +20,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using OpenSearch.Client;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Genesis.Search.AWS.Extensions;
 using Pervaxis.Genesis.Search.AWS.Options;
@@ -29,6 +30,52 @@ namespace Pervaxis.Genesis.Search.AWS.Tests;
 
 public class SearchServiceCollectionExtensionsTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Registration_SharesClientAcrossValidatedScopes(bool useConfiguration)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        if (useConfiguration)
+        {
+            services.AddGenesisSearch(new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Region"] = "us-east-1",
+                    ["DomainEndpoint"] = "http://localhost:9200"
+                }).Build());
+        }
+        else
+        {
+            services.AddGenesisSearch(options =>
+            {
+                options.Region = "us-east-1";
+                options.DomainEndpoint = "http://localhost:9200";
+            });
+        }
+
+        using var root = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true, ValidateOnBuild = true
+        });
+        Assert.Throws<InvalidOperationException>(() => root.GetRequiredService<ISearch>());
+        IOpenSearchClient firstClient;
+        ISearch firstProvider;
+        using (var first = root.CreateScope())
+        {
+            firstProvider = first.ServiceProvider.GetRequiredService<ISearch>();
+            Assert.Same(firstProvider, first.ServiceProvider.GetRequiredService<ISearch>());
+            firstClient = first.ServiceProvider.GetRequiredKeyedService<IOpenSearchClient>(
+                SearchServiceCollectionExtensions.ClientServiceKey);
+        }
+
+        using var second = root.CreateScope();
+        Assert.NotSame(firstProvider, second.ServiceProvider.GetRequiredService<ISearch>());
+        Assert.Same(firstClient, second.ServiceProvider.GetRequiredKeyedService<IOpenSearchClient>(
+            SearchServiceCollectionExtensions.ClientServiceKey));
+    }
+
     [Fact]
     public void AddGenesisSearch_WithConfiguration_NullServices_ThrowsArgumentNullException()
     {
@@ -75,7 +122,7 @@ public class SearchServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void AddGenesisSearch_WithConfiguration_RegistersAsSingleton()
+    public void AddGenesisSearch_WithConfiguration_RegistersAsScoped()
     {
         // Arrange
         var services = new ServiceCollection();
@@ -96,6 +143,8 @@ public class SearchServiceCollectionExtensionsTests
         var instance1 = serviceProvider.GetService<ISearch>();
         var instance2 = serviceProvider.GetService<ISearch>();
         instance1.Should().BeSameAs(instance2);
+        using var scope = serviceProvider.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ISearch>().Should().NotBeSameAs(instance1);
     }
 
     [Fact]
@@ -163,7 +212,7 @@ public class SearchServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void AddGenesisSearch_WithAction_RegistersAsSingleton()
+    public void AddGenesisSearch_WithAction_RegistersAsScoped()
     {
         // Arrange
         var services = new ServiceCollection();
@@ -181,6 +230,8 @@ public class SearchServiceCollectionExtensionsTests
         var instance1 = serviceProvider.GetService<ISearch>();
         var instance2 = serviceProvider.GetService<ISearch>();
         instance1.Should().BeSameAs(instance2);
+        using var scope = serviceProvider.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ISearch>().Should().NotBeSameAs(instance1);
     }
 
     [Fact]

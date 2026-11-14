@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Search (`Pervaxis.Genesis.Search.AWS`): shared-index tenant isolation
+
+- All tenants share each logical index. Index and bulk writes stamp a reserved
+  `tenantId`; document IDs are namespaced by tenant for writes and deletes.
+- Searches always include an exact tenant filter on `tenantId.keyword`.
+- Missing, invalid or changed tenant contexts fail closed, including empty bulk
+  calls. The legacy isolation flag cannot disable enforcement.
+- Providers are Scoped; keyed OpenSearch clients and settings are Singleton.
+- **Breaking:** index names, document IDs and DI lifetimes change. Existing data
+  is not migrated automatically. Provision the exact keyword mapping and follow
+  the [deployment notes](src/Pervaxis.Genesis.Search.AWS/README.md).
+- Ingest pipeline management and reindexing remain outside this change.
+
 ### FileStorage (`Pervaxis.Genesis.FileStorage.AWS`): tenant isolation hardening
 
 See [ADR-0001](docs/architecture/ADR-0001-filestorage-tenant-isolation.md) for the full model.
