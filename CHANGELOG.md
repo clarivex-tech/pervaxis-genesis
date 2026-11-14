@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Messaging (`Pervaxis.Genesis.Messaging.AWS`): shared-resource tenant enforcement
+
+- SQS/SNS providers are Scoped and use keyed, container-owned Singleton AWS clients.
+- Single/batch publication requires a valid, stable tenant, including empty batches;
+  the reserved tenant attribute is stamped from execution context. Disabling isolation
+  is rejected in every environment.
+- Tenant receives expose only matching messages; acknowledgement requires a receipt
+  received for that tenant and queue by the same provider scope.
+- Explicit `ISharedQueueConsumer` registration processes shared queues outside tenant
+  requests, with separate tenant and async DI scopes per message. Handler failures,
+  context mismatches and cancellation leave messages unacknowledged.
+- Invalid envelopes/payloads are quarantined before acknowledgement. Missing/failing
+  DLQs preserve the source message.
+- **Breaking:** shared-topic subscriptions must be provisioned by the platform;
+  tenant `SubscribeAsync` is disabled. Provider lifetimes, receive/acknowledgement
+  ownership and worker registration requirements have changed. See the
+  [Messaging guide](src/Pervaxis.Genesis.Messaging.AWS/README.md).
+
 ### Search (`Pervaxis.Genesis.Search.AWS`): shared-index tenant isolation
 
 - All tenants share each logical index. Index and bulk writes stamp a reserved

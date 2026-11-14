@@ -24,6 +24,7 @@ using System.Text.Json;
 using Amazon;
 using Amazon.SQS;
 using Amazon.SQS.Model;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
@@ -36,6 +37,7 @@ using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Base.Validation;
 using Pervaxis.Genesis.Messaging.AWS.Caching;
 using Pervaxis.Genesis.Messaging.AWS.Options;
+using Pervaxis.Genesis.Messaging.AWS.Security;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
 
@@ -48,13 +50,19 @@ namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
 /// For the full consumer pattern (receive then delete), use the receipt handle returned
 /// in the SQS message; call <see cref="DeleteAsync"/> with the queue name and that handle.
 /// </remarks>
-public sealed class SqsMessagingProvider : IMessaging, IDisposable
+public sealed class SqsMessagingProvider : IMessaging, ISharedQueueConsumer, IDisposable
 {
     private const int SqsMaxBatchSize = 10;
 
     private readonly MessagingOptions _options;
     private readonly ILogger<SqsMessagingProvider> _logger;
     private readonly ITenantContext? _tenantContext;
+    private readonly TenantMessagingGuard _guard;
+    private readonly bool _ownsClient;
+    private bool _disposed;
+    private readonly bool _sharedConsumer;
+    private readonly IServiceScopeFactory? _serviceScopeFactory;
+    private readonly ConcurrentDictionary<(string Queue, string Receipt), string> _receipts = new();
     private readonly ITenantScopeFactory? _tenantScopeFactory;
     private readonly Lazy<IAmazonSQS> _sqsClient;
     private readonly JsonSerializerOptions _jsonOptions;
@@ -106,9 +114,9 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     /// </summary>
     /// <param name="options">Messaging configuration options.</param>
     /// <param name="logger">Logger instance.</param>
-    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
-    /// <param name="tenantScopeFactory">Optional tenant scope factory. Required by <c>ProcessAsync</c> to run each message under its own tenant.</param>
-    /// <param name="environment">Optional environment name for validation (defaults to Production).</param>
+    /// <param name="tenantContext">Current tenant context; publication fails when it is unresolved.</param>
+    /// <param name="tenantScopeFactory">Legacy parameter. Use AddGenesisSharedQueueConsumer for trusted shared consumption.</param>
+    /// <param name="environment">Legacy compatibility parameter; isolation cannot be disabled in any environment.</param>
     /// <param name="timeProvider">Optional time provider for testing (defaults to system time).</param>
     public SqsMessagingProvider(
         IOptions<MessagingOptions> options,
@@ -124,12 +132,14 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _guard = new TenantMessagingGuard(tenantContext);
         _tenantScopeFactory = tenantScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions(environment);
+        ValidateOptions();
 
-        _sqsClient = new Lazy<IAmazonSQS>(CreateClient);
+        _ownsClient = true;
+        _sqsClient = new Lazy<IAmazonSQS>(() => CreateClient(_options));
         _jsonOptions = BuildJsonOptions();
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
             _options.Resilience,
@@ -139,7 +149,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         _logger.LogInformation(
             "SqsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _tenantContext?.IsResolved == true,
             _options.Resilience.Enabled);
     }
 
@@ -153,19 +163,24 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         IAmazonSQS sqsClient,
         ITenantContext? tenantContext = null,
         TimeProvider? timeProvider = null,
-        ITenantScopeFactory? tenantScopeFactory = null)
+        ITenantScopeFactory? tenantScopeFactory = null,
+        bool sharedConsumer = false,
+        IServiceScopeFactory? serviceScopeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(sqsClient);
 
+        _sharedConsumer = sharedConsumer;
+        _serviceScopeFactory = serviceScopeFactory;
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _guard = new TenantMessagingGuard(tenantContext);
         _tenantScopeFactory = tenantScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions("Test"); // Internal constructor always allows disabled isolation
+        ValidateOptions();
 
         _sqsClient = new Lazy<IAmazonSQS>(() => sqsClient);
         _jsonOptions = BuildJsonOptions();
@@ -192,6 +207,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         ArgumentNullException.ThrowIfNull(message);
 
         var queueUrl = ResolveQueueUrl(destination);
+        RequireTenant();
         var body = Serialize(message);
 
         try
@@ -246,6 +262,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             // Pass through access denied and throttling unchanged for IAM policy detection
             throw;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (GenesisException)
         {
             // Pass through Genesis exceptions without wrapping
@@ -283,6 +303,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(messages);
 
+        RequireTenant();
         var messageList = messages.ToList();
         if (messageList.Count == 0)
         {
@@ -370,6 +391,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             // Pass through access denied and throttling unchanged for IAM policy detection
             throw;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (GenesisException)
         {
             // Pass through Genesis exceptions without wrapping
@@ -393,134 +418,22 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Phase 1B: Validates tenant IDs and dead-letters invalid messages.
-    /// Does NOT set ITenantContext - caller must manage tenant scoping.
-    /// For automatic tenant scoping, use <see cref="ProcessAsync{T}"/> instead.
-    /// For manual scoping with metadata, use <see cref="ReceiveWithMetadataAsync{T}"/>.
+    /// Returns only messages owned by the current tenant. Invalid envelopes are quarantined.
+    /// For automatic tenant scoping, use <see cref="ISharedQueueConsumer.ProcessAsync{T}"/> instead.
+    /// For receipt handles, use <see cref="ReceiveWithMetadataAsync{T}"/> in the same provider scope.
     /// </remarks>
     public async Task<IEnumerable<T>> ReceiveAsync<T>(
-        string queue,
-        int maxMessages = 10,
-        CancellationToken cancellationToken = default)
+        string queue, int maxMessages = 10, CancellationToken cancellationToken = default)
     {
-        var stopwatch = Stopwatch.StartNew();
-        using var activity = PervaxisActivitySource.StartActivity("messaging.receive", ActivityKind.Consumer);
-        activity?.SetTag("messaging.system", "sqs");
-        activity?.SetTag("messaging.destination", queue);
-        activity?.SetTag("messaging.operation", "receive");
-        AddTenantTags(activity);
-
         ArgumentException.ThrowIfNullOrWhiteSpace(queue);
-
-        var queueUrl = ResolveQueueUrl(queue);
-        var effectiveMax = Math.Clamp(maxMessages, 1, SqsMaxBatchSize);
-
-        try
+        RequireTenant();
+        if (_sharedConsumer)
         {
-            var request = new ReceiveMessageRequest
-            {
-                QueueUrl = queueUrl,
-                MaxNumberOfMessages = effectiveMax,
-                WaitTimeSeconds = _options.Sqs.WaitTimeSeconds,
-                VisibilityTimeout = _options.Sqs.VisibilityTimeoutSeconds,
-                MessageAttributeNames = new List<string> { "All" }  // Phase 1B: Receive all attributes including pervaxis_tenant_id
-            };
-
-            var response = await _resiliencePipeline.ExecuteAsync(
-                async ct => await _sqsClient.Value.ReceiveMessageAsync(request, ct).ConfigureAwait(false),
-                cancellationToken);
-
-            activity?.SetTag("messaging.message_count", (response.Messages?.Count ?? 0));
-            _logger.LogDebug(
-                "Received {Count} messages from SQS queue {QueueUrl}",
-                (response.Messages?.Count ?? 0), queueUrl);
-
-            // Phase 1B: Process messages with tenant isolation validation
-            var result = new List<T>();
-            foreach (var message in response.Messages ?? [])
-            {
-                var deserialized = Deserialize<T>(message.Body);
-                if (deserialized is null)
-                {
-                    _logger.LogWarning("Failed to deserialize message {MessageId}, skipping", message.MessageId);
-                    continue;
-                }
-
-                // Phase 1B: Extract and validate tenant ID from message attributes
-                if (_options.EnableTenantIsolation)
-                {
-                    var validationResult = ValidateAndExtractTenantId(message);
-                    if (!validationResult.IsValid)
-                    {
-                        // Send to DLQ and continue to next message
-                        await SendToDlqAsync(message, validationResult.FailureReason!, queueUrl, cancellationToken);
-                        
-                        // Delete the invalid message from the original queue
-                        await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
-                        continue;
-                    }
-
-                    // Valid message: tenant ID extracted successfully
-                    _logger.LogDebug(
-                        "Message {MessageId} validated with tenant {TenantId}",
-                        message.MessageId, validationResult.TenantId);
-                }
-
-                result.Add(deserialized);
-            }
-
-            // Record metrics
-            var tags = GetMetricTags("receive", "success", "sqs");
-            _operationsCounter.Add(1, tags);
-            _messagesReceived.Add(result.Count, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
-
-            return result;
+            throw new InvalidOperationException("Use the shared consumer's scoped processing API.");
         }
-        catch (QueueDoesNotExistException ex)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "SQS queue {QueueUrl} does not exist. Resource must be provisioned.", queueUrl);
-
-            // Invalidate cache on not-found error
-            InvalidateQueueCache(queue, MessageScope.Tenant);
-
-            var errorTags = GetMetricTags("receive", "error", "sqs");
-            _operationsCounter.Add(1, errorTags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
-
-            throw new GenesisException(
-                nameof(SqsMessagingProvider),
-                $"Queue '{queueUrl}' not provisioned. Ensure tenant messaging resources are created before use.",
-                ex,
-                "QUEUE_NOT_FOUND",
-                new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
-        }
-        catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
-        {
-            throw;
-        }
-        catch (GenesisException)
-        {
-            // Pass through Genesis exceptions without wrapping
-            throw;
-        }
-        catch (Exception ex)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "SQS receive operation failed");
-
-            var errorTags = GetMetricTags("receive", "error", "sqs");
-            _operationsCounter.Add(1, errorTags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
-
-            throw new GenesisException(
-                nameof(SqsMessagingProvider),
-                "SQS receive operation failed. See inner exception for details.",
-                ex);
-        }
+        var messages = await ReceiveWithMetadataAsync<T>(queue, maxMessages, cancellationToken);
+        return messages.Select(m => m.Message).ToList();
     }
-
     /// <inheritdoc/>
     public async Task<bool> DeleteAsync(
         string queue,
@@ -537,8 +450,16 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(queue);
         ArgumentException.ThrowIfNullOrWhiteSpace(receiptHandle);
 
+        var tenant = RequireTenant();
         var queueUrl = ResolveQueueUrl(queue);
 
+        if (!_receipts.TryGetValue((queueUrl, receiptHandle), out var owner)
+            || !StringComparer.Ordinal.Equals(owner, tenant))
+        {
+            throw new GenesisException(nameof(SqsMessagingProvider),
+                "Receipt handle was not received by this tenant in this provider scope.",
+                "RECEIPT_TENANT_MISMATCH", null);
+        }
         try
         {
             var request = new DeleteMessageRequest
@@ -551,6 +472,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 async ct => await _sqsClient.Value.DeleteMessageAsync(request, ct).ConfigureAwait(false),
                 cancellationToken);
 
+            _receipts.TryRemove((queueUrl, receiptHandle), out _);
             activity?.SetTag("messaging.success", true);
             _logger.LogDebug("Deleted message from SQS queue {QueueUrl}", queueUrl);
 
@@ -581,6 +503,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
         }
         catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -623,14 +549,19 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (_sqsClient.IsValueCreated)
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        if (_ownsClient && _sqsClient.IsValueCreated)
         {
             _sqsClient.Value.Dispose();
             _logger.LogInformation("SqsMessagingProvider client disposed");
         }
     }
 
-    private void ValidateOptions(string? environment = null)
+    private void ValidateOptions()
     {
         if (!_options.Validate())
         {
@@ -639,31 +570,11 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 "Invalid messaging configuration");
         }
 
-        // SECURITY: Tenant isolation can ONLY be disabled in Development and Test environments (allow-list)
-        if (!_options.EnableTenantIsolation)
-        {
-            var env = environment ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? string.Empty;
-            
-            // Allow-list: only Development and Test can disable isolation
-            var isAllowed = env.Equals("Development", StringComparison.OrdinalIgnoreCase) ||
-                           env.Equals("Test", StringComparison.OrdinalIgnoreCase);
-            
-            if (!isAllowed)
-            {
-                // Fail closed: missing env or any non-allowed environment is rejected
-                var envDisplay = string.IsNullOrEmpty(env) ? "(not set)" : env;
-                throw new GenesisConfigurationException(
-                    nameof(SqsMessagingProvider),
-                    $"Tenant isolation cannot be disabled in environment '{envDisplay}'. " +
-                    "EnableTenantIsolation=false is ONLY allowed in 'Development' or 'Test' environments.");
-            }
-        }
     }
 
     /// <summary>
-    /// Phase 1B: Receives messages with full metadata including tenant IDs.
-    /// Validates and dead-letters invalid messages. Returns only valid messages with their tenant IDs.
-    /// Caller is responsible for creating tenant scopes when processing messages.
+    /// Receives validated messages with tenant IDs and receipts. Tenant providers return
+    /// only their current tenant; explicitly registered workers validate all tenants.
     /// </summary>
     /// <typeparam name="T">The type of the message payload.</typeparam>
     /// <param name="queue">Queue name (logical identifier, not URL).</param>
@@ -674,7 +585,6 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         string queue,
         int maxMessages = 10,
         CancellationToken cancellationToken = default)
-        where T : notnull
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("messaging.receive_with_metadata", ActivityKind.Consumer);
@@ -685,6 +595,16 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         ArgumentException.ThrowIfNullOrWhiteSpace(queue);
 
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        string? currentTenant = null;
+        if (_sharedConsumer)
+        {
+            _guard.RequireWorker(true);
+        }
+        else
+        {
+            currentTenant = RequireTenant();
+        }
         var queueUrl = ResolveQueueUrl(queue);
         var effectiveMax = Math.Clamp(maxMessages, 1, SqsMaxBatchSize);
 
@@ -705,48 +625,66 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
             activity?.SetTag("messaging.message_count", (response.Messages?.Count ?? 0));
 
+            if (_sharedConsumer)
+            {
+                _guard.RequireWorker(true);
+            }
+            else
+            {
+                RequireTenant();
+            }
             var result = new List<ReceivedMessage<T>>();
             foreach (var message in response.Messages ?? [])
             {
-                var deserialized = Deserialize<T>(message.Body);
-                if (deserialized is null)
+                cancellationToken.ThrowIfCancellationRequested();
+                var validation = ValidateAndExtractTenantId(message);
+                if (!validation.IsValid)
                 {
-                    _logger.LogWarning("Failed to deserialize message {MessageId}, skipping", message.MessageId);
+                    await SendToDlqAsync(message, validation.FailureReason!, queueUrl, cancellationToken);
+                    await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
                     continue;
                 }
-
-                if (_options.EnableTenantIsolation)
+                if (currentTenant is not null && !StringComparer.Ordinal.Equals(currentTenant, validation.TenantId))
                 {
-                    var validationResult = ValidateAndExtractTenantId(message);
-                    if (!validationResult.IsValid)
+                    await _sqsClient.Value.ChangeMessageVisibilityAsync(new ChangeMessageVisibilityRequest
                     {
-                        await SendToDlqAsync(message, validationResult.FailureReason!, queueUrl, cancellationToken);
-                        await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
-                        continue;
-                    }
-
-                    result.Add(new ReceivedMessage<T>(
-                        deserialized,
-                        message.ReceiptHandle,
-                        message.MessageId,
-                        validationResult.TenantId));
+                        QueueUrl = queueUrl, ReceiptHandle = message.ReceiptHandle, VisibilityTimeout = 0
+                    }, cancellationToken);
+                    continue;
                 }
-                else
+                T? payload;
+                try
                 {
-                    result.Add(new ReceivedMessage<T>(
-                        deserialized,
-                        message.ReceiptHandle,
-                        message.MessageId,
-                        null));
+                    payload = Deserialize<T>(message.Body);
+                    if (payload is null)
+                    {
+                        throw new JsonException("Null message payload.");
+                    }
                 }
+                catch (JsonException)
+                {
+                    await SendToDlqAsync(message, "invalid_payload", queueUrl, cancellationToken);
+                    await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(message.ReceiptHandle))
+                {
+                    throw new GenesisException(nameof(SqsMessagingProvider),
+                        "Received message has no receipt handle.", "INVALID_RECEIPT_HANDLE", null);
+                }
+                _receipts[(queueUrl, message.ReceiptHandle)] = validation.TenantId!;
+                result.Add(new ReceivedMessage<T>(payload, message.ReceiptHandle,
+                    message.MessageId, validation.TenantId));
             }
-
             var tags = GetMetricTags("receive_with_metadata", "success", "sqs");
             _operationsCounter.Add(1, tags);
             _messagesReceived.Add(result.Count, tags);
             _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
-            return result;
+            if (!_sharedConsumer)
+            {
+                RequireTenant();
+            }            return result;
         }
         catch (QueueDoesNotExistException ex)
         {
@@ -766,6 +704,10 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 new Dictionary<string, object> { ["QueueUrl"] = queueUrl });
         }
         catch (AmazonSQSException ex) when (ex.ErrorCode == "AccessDenied" || ex.ErrorCode == "ThrottlingException" || ex.ErrorCode == "Throttling")
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -790,9 +732,8 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     }
 
     /// <summary>
-    /// Phase 1B: Receives and processes messages with automatic tenant scoping.
-    /// For each message: validates tenant, sets ITenantContext, runs handler, clears context, deletes message.
-    /// If handler throws, context is cleared but message is NOT deleted (SQS will retry).
+    /// Legacy handler overload for explicitly registered workers. Each message receives
+    /// tenant and DI scopes. Prefer the ISharedQueueConsumer overload to resolve scoped dependencies.
     /// </summary>
     /// <typeparam name="T">The type of the message payload.</typeparam>
     /// <param name="queue">Queue name (logical identifier, not URL).</param>
@@ -802,79 +743,82 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
     /// <returns>Task representing the async operation.</returns>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Per-message isolation by design: one failing handler is logged and left for SQS redelivery so the other messages still process.")]
-    public async Task ProcessAsync<T>(
-        string queue,
-        Func<T, Task> handler,
-        int maxMessages = 10,
-        CancellationToken cancellationToken = default)
-        where T : notnull
+    public Task ProcessAsync<T>(
+        string queue, Func<T, Task> handler, int maxMessages = 10,
+        CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentNullException.ThrowIfNull(handler);
+        return ProcessAsync<T>(queue, (message, _, _) => handler(message), maxMessages, cancellationToken);
+    }
 
-        if (_tenantScopeFactory is null)
+    /// <inheritdoc />
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Failed messages remain unacknowledged for SQS redelivery; independent messages continue.")]
+    public async Task ProcessAsync<T>(
+        string queue, Func<T, IServiceProvider, CancellationToken, Task> handler,
+        int maxMessages = 10, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _guard.RequireWorker(_sharedConsumer);
+        if (_tenantScopeFactory is null || _serviceScopeFactory is null)
         {
-            throw new InvalidOperationException(
-                "ITenantScopeFactory is required for ProcessAsync but was not provided to SqsMessagingProvider. " +
-                "Register ITenantScopeFactory in DI or use ReceiveWithMetadataAsync for manual scope management.");
+            throw new InvalidOperationException("Shared processing requires ITenantScopeFactory and IServiceScopeFactory.");
         }
-
+        var queueUrl = ResolveQueueUrl(queue);
         var messages = await ReceiveWithMetadataAsync<T>(queue, maxMessages, cancellationToken);
-
-        // Process each message in its own async flow to prevent context leakage
         var tasks = messages.Select(async message =>
         {
-            IDisposable? tenantScope = null;
             try
             {
-                // Set tenant context for this message
-                if (_options.EnableTenantIsolation && message.TenantId is not null)
+                cancellationToken.ThrowIfCancellationRequested();
+                using (var tenantScope = _tenantScopeFactory.BeginScope(new TenantId(message.TenantId!)))
                 {
-                    var tenantId = new TenantId(message.TenantId);
-                    tenantScope = _tenantScopeFactory.BeginScope(tenantId);
+                    await using var services = _serviceScopeFactory.CreateAsyncScope();
+                    var context = services.ServiceProvider.GetRequiredService<ITenantContext>();
+                    if (!context.IsResolved || !StringComparer.Ordinal.Equals(context.TenantId.Value, message.TenantId))
+                    {
+                        throw new GenesisException(nameof(SqsMessagingProvider),
+                            "Message handler tenant context does not match its envelope.", "TENANT_CONTEXT_MISMATCH", null);
+                    }
+                    await handler(message.Message, services.ServiceProvider, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!context.IsResolved || !StringComparer.Ordinal.Equals(context.TenantId.Value, message.TenantId))
+                    {
+                        throw new GenesisException(nameof(SqsMessagingProvider),
+                            "Tenant changed while handling the message.", "TENANT_CONTEXT_CHANGED", null);
+                    }
                 }
-
-                // Run handler
-                await handler(message.Message).ConfigureAwait(false);
-
-                // Success: delete message from queue
-                await DeleteMessageAsync(
-                    ResolveQueueUrl(queue),
-                    message.ReceiptHandle,
-                    cancellationToken);
-
-                _logger.LogDebug(
-                    "Processed message {MessageId} for tenant {TenantId}",
-                    message.MessageId, message.TenantId ?? "(none)");
+                cancellationToken.ThrowIfCancellationRequested();
+                await DeleteMessageAsync(queueUrl, message.ReceiptHandle, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex,
-                    "Handler failed for message {MessageId}, tenant {TenantId}. Message will be retried by SQS.",
-                    message.MessageId, message.TenantId ?? "(none)");
-                // Don't delete message - let SQS retry
-                // Don't rethrow - continue processing other messages
+                _logger.LogError(ex, "Message {MessageId} failed for tenant {TenantId}; leaving it for redelivery.",
+                    message.MessageId, message.TenantId);
             }
             finally
             {
-                // Always clear tenant context
-                tenantScope?.Dispose();
+                _receipts.TryRemove((queueUrl, message.ReceiptHandle), out _);
             }
         });
-
         await Task.WhenAll(tasks);
     }
-
-    private IAmazonSQS CreateClient()
+    internal static IAmazonSQS CreateClient(MessagingOptions options)
     {
+        options.Validate();
         var config = new AmazonSQSConfig
         {
-            RegionEndpoint = RegionEndpoint.GetBySystemName(_options.Region)
+            RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region)
         };
 
-        if (_options.UseLocalEmulator && _options.LocalEmulatorUrl is not null)
+        if (options.UseLocalEmulator && options.LocalEmulatorUrl is not null)
         {
-            config.ServiceURL = _options.LocalEmulatorUrl.AbsoluteUri;
-            _logger.LogInformation("SqsMessagingProvider using local emulator: {Url}", _options.LocalEmulatorUrl);
+            config.ServiceURL = options.LocalEmulatorUrl.AbsoluteUri;
         }
 
         return new AmazonSQSClient(config);
@@ -1096,88 +1040,26 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
     private void AddTenantAttributes(Dictionary<string, MessageAttributeValue> attributes)
     {
-        // SECURITY: First, reject any caller-supplied reserved attributes (pervaxis_* prefix)
-        // This prevents callers from spoofing tenant IDs or other platform-controlled metadata
-        var reservedKeys = attributes.Keys
-            .Where(k => k.StartsWith(MessagingConstants.ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (reservedKeys.Count > 0)
+        if (attributes.Keys.Any(k => k.StartsWith(MessagingConstants.ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase)))
         {
-            _logger.LogError(
-                "Caller attempted to supply reserved message attributes: {ReservedKeys}. " +
-                "Attributes with prefix '{Prefix}' are platform-controlled and will be rejected.",
-                string.Join(", ", reservedKeys),
-                MessagingConstants.ReservedAttributePrefix);
-
-            throw new GenesisException(
-                nameof(SqsMessagingProvider),
-                $"Reserved message attributes cannot be set by callers. " +
-                $"The following reserved attributes were rejected: {string.Join(", ", reservedKeys)}. " +
-                $"Attributes prefixed with '{MessagingConstants.ReservedAttributePrefix}' are platform-controlled.",
-                MessagingConstants.FailureReasons.ReservedAttributeSupplied,
-                new Dictionary<string, object>
-                {
-                    ["ReservedKeys"] = reservedKeys,
-                    ["ReservedPrefix"] = MessagingConstants.ReservedAttributePrefix
-                });
+            throw new GenesisException(nameof(SqsMessagingProvider),
+                "Reserved message attributes cannot be set by callers.",
+                MessagingConstants.FailureReasons.ReservedAttributeSupplied, null);
         }
-
-        // SECURITY: Fail closed - if tenant isolation is enabled but context not resolved, reject
-        if (_options.EnableTenantIsolation)
+        attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
         {
-            if (_tenantContext?.IsResolved != true)
-            {
-                _logger.LogError(
-                    "Tenant isolation is enabled but ITenantContext is not resolved. " +
-                    "Cannot publish message without tenant context.");
-
-                throw new GenesisException(
-                    nameof(SqsMessagingProvider),
-                    "Tenant context not resolved. Cannot publish messages when tenant isolation is enabled. " +
-                    "Ensure ITenantContext is properly configured and a tenant has been resolved for this request.",
-                    "TENANT_CONTEXT_NOT_RESOLVED",
-                    null);
-            }
-
-            var tenantIdValue = _tenantContext.TenantId.Value;
-
-            // SECURITY: Validate tenant ID format before publishing (fail-closed)
-            var validationResult = TenantIdValidator.Validate(tenantIdValue);
-            if (!validationResult.IsValid)
-            {
-                _logger.LogError(
-                    "Cannot publish message: tenant ID '{TenantId}' is invalid. {ValidationError}",
-                    tenantIdValue, validationResult.ErrorMessage);
-
-                throw new GenesisException(
-                    nameof(SqsMessagingProvider),
-                    $"Invalid tenant ID '{tenantIdValue}': {validationResult.ErrorMessage}. " +
-                    "Messages cannot be published with malformed tenant identifiers.",
-                    "INVALID_TENANT_ID",
-                    new Dictionary<string, object>
-                    {
-                        ["TenantId"] = tenantIdValue,
-                        ["ValidationError"] = validationResult.ErrorMessage!
-                    });
-            }
-
-            // Inject tenant ID from ITenantContext (NEVER trust caller-supplied values)
-            attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
-            {
-                DataType = "String",
-                StringValue = tenantIdValue
-            };
-
-            _logger.LogDebug(
-                "Stamped message with tenant ID: {TenantId}",
-                tenantIdValue);
-        }
+            DataType = "String", StringValue = RequireTenant()
+        };
     }
 
+    private string RequireTenant()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _guard.RequireTenant();
+    }
     private void AddTenantTags(Activity? activity)
     {
-        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        if (activity == null || _tenantContext?.IsResolved != true)
         {
             return;
         }
@@ -1195,7 +1077,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             { "provider", provider }
         };
 
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        if (_tenantContext?.IsResolved == true)
         {
             tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
         }
@@ -1218,6 +1100,13 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
             return (false, null, MessagingConstants.FailureReasons.MissingTenantId);
         }
 
+        if (tenantIdAttr is null || tenantIdAttr.DataType != "String"
+            || message.MessageAttributes.Keys.Any(k =>
+                k.Equals(MessagingConstants.TenantIdAttribute, StringComparison.OrdinalIgnoreCase)
+                && !k.Equals(MessagingConstants.TenantIdAttribute, StringComparison.Ordinal)))
+        {
+            return (false, null, MessagingConstants.FailureReasons.InvalidTenantId);
+        }
         var tenantIdValue = tenantIdAttr.StringValue;
 
         // Reject platform messages in tenant-scoped consumers
@@ -1231,7 +1120,7 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
 
         // Validate tenant ID format using shared validator
         var validationResult = TenantIdValidator.Validate(tenantIdValue);
-        if (!validationResult.IsValid)
+        if (!validationResult.IsValid || tenantIdValue.Any(char.IsControl))
         {
             _logger.LogWarning(
                 "Message {MessageId} has invalid tenant ID '{TenantId}': {ValidationError}",
@@ -1251,10 +1140,15 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
         string sourceQueueUrl,
         CancellationToken cancellationToken)
     {
+        if (StringComparer.Ordinal.Equals(_options.Sqs.DlqUrl, sourceQueueUrl))
+        {
+            throw new GenesisConfigurationException(nameof(SqsMessagingProvider),
+                "The validation DLQ must differ from the source queue.");
+        }
         if (string.IsNullOrWhiteSpace(_options.Sqs.DlqUrl))
         {
             _logger.LogError(
-                "CRITICAL: No DLQ configured. Invalid message {MessageId} will be DROPPED. Reason: {FailureReason}",
+                "No DLQ configured. Invalid message {MessageId} remains unacknowledged. Reason: {FailureReason}",
                 originalMessage.MessageId, failureReason);
             throw new GenesisException(
                 nameof(SqsMessagingProvider),
@@ -1315,11 +1209,15 @@ public sealed class SqsMessagingProvider : IMessaging, IDisposable
                 },
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Failed to delete message with receipt handle {ReceiptHandle} from queue {QueueUrl}",
-                receiptHandle, queueUrl);
+                "Failed to acknowledge a message from queue {QueueUrl}; leaving it for redelivery",
+                queueUrl);
             // Don't throw - this is a best-effort cleanup
         }
     }

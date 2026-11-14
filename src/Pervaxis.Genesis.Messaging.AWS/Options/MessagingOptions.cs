@@ -40,9 +40,7 @@ public sealed class MessagingOptions : GenesisOptionsBase
     public SnsOptions Sns { get; set; } = new();
 
     /// <summary>
-    /// Gets or sets a value indicating whether to automatically tag messages with tenant ID.
-    /// When enabled, all messages include a "TenantId" attribute for tenant isolation.
-    /// Default is true.
+    /// Legacy setting. Tenant isolation is mandatory; false is rejected in every environment.
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
 
@@ -87,6 +85,11 @@ public sealed class MessagingOptions : GenesisOptionsBase
             return false;
         }
 
+        if (!EnableTenantIsolation)
+        {
+            throw new GenesisConfigurationException(nameof(MessagingOptions),
+                "Tenant isolation cannot be disabled for shared messaging resources.");
+        }
         // Phase 1: Per-tenant resources not yet implemented
         if (EnablePerTenantResources)
         {
