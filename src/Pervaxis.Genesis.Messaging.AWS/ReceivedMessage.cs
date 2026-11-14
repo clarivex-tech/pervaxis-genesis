@@ -31,5 +31,4 @@ public sealed record ReceivedMessage<T>(
     T Message,
     string ReceiptHandle,
     string MessageId,
-    string? TenantId = null)
-    where T : notnull;
+    string? TenantId = null);

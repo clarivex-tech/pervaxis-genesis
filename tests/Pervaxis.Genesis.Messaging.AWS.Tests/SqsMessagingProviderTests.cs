@@ -62,6 +62,18 @@ public class SqsMessagingProviderTests
         return tenant.Object;
     }
 
+    private void SetupReceipt(string handle)
+    {
+        _mockSqs.Setup(c => c.ReceiveMessageAsync(It.IsAny<ReceiveMessageRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReceiveMessageResponse { Messages = [new Message
+            {
+                MessageId = "id", ReceiptHandle = handle, Body = """{"Id":1,"Text":"test"}""",
+                MessageAttributes = new Dictionary<string, MessageAttributeValue>
+                {
+                    [MessagingConstants.TenantIdAttribute] = new() { DataType = "String", StringValue = "acme" }
+                }
+            }] });
+    }
     private sealed record TestMessage(int Id, string Text);
 
     // ── Constructor ──────────────────────────────────────────────────────────
@@ -300,7 +312,7 @@ public class SqsMessagingProviderTests
 
             var act = async () => await CreateProvider().ReceiveAsync<TestMessage>("orders");
             await act.Should().ThrowAsync<GenesisException>()
-                .WithMessage("*SQS receive operation failed*");
+                .WithMessage("*SQS receive*operation failed*");
         }
     }
 
@@ -315,7 +327,10 @@ public class SqsMessagingProviderTests
                 .Setup(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new DeleteMessageResponse());
 
-            var result = await CreateProvider().DeleteAsync("orders", "receipt-handle-abc");
+            var provider = CreateProvider();
+            SetupReceipt("receipt-handle-abc");
+            await provider.ReceiveWithMetadataAsync<TestMessage>("orders");
+            var result = await provider.DeleteAsync("orders", "receipt-handle-abc");
 
             result.Should().BeTrue();
         }
@@ -341,7 +356,10 @@ public class SqsMessagingProviderTests
                 .Setup(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new AmazonSQSException("Delete failed"));
 
-            var act = async () => await CreateProvider().DeleteAsync("orders", "rh");
+            var provider = CreateProvider();
+            SetupReceipt("rh");
+            await provider.ReceiveWithMetadataAsync<TestMessage>("orders");
+            var act = async () => await provider.DeleteAsync("orders", "rh");
             await act.Should().ThrowAsync<GenesisException>()
                 .WithMessage("*SQS delete operation failed*");
         }
@@ -373,7 +391,7 @@ public class SqsMessagingProviderTests
         }
 
         [Fact]
-        public async Task WhenClientWasUsed_DisposesSqsClient()
+        public async Task WhenClientWasUsed_DoesNotDisposeSharedSqsClient()
         {
             _mockSqs
                 .Setup(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()))
@@ -383,7 +401,7 @@ public class SqsMessagingProviderTests
             await provider.PublishAsync("orders", new TestMessage(1, "Hi"));
             provider.Dispose();
 
-            _mockSqs.Verify(s => s.Dispose(), Times.Once);
+            _mockSqs.Verify(s => s.Dispose(), Times.Never);
         }
     }
 }

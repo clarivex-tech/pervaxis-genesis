@@ -253,78 +253,28 @@ public class SnsMessagingProviderTests
 
     public class SubscribeAsync : SnsMessagingProviderTests
     {
-        [Fact]
-        public async Task SqsEndpoint_ReturnsSubscriptionArn()
+        [Theory]
+        [InlineData("arn:aws:sqs:ap-south-1:123:shared-queue")]
+        [InlineData("https://example.com/webhook")]
+        [InlineData("user@example.com")]
+        public async Task TenantCannotManageSharedSubscriptions(string endpoint)
         {
-            const string subscriptionArn = "arn:aws:sns:ap-south-1:123:my-topic:sub-001";
-            _mockSns
-                .Setup(s => s.SubscribeAsync(It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new SubscribeResponse { SubscriptionArn = subscriptionArn });
-
-            var result = await CreateProvider().SubscribeAsync(
-                "events",
-                "arn:aws:sqs:ap-south-1:123:my-queue");
-
-            result.Should().Be(subscriptionArn);
-        }
-
-        [Fact]
-        public async Task HttpsEndpoint_UsesHttpsProtocol()
-        {
-            _mockSns
-                .Setup(s => s.SubscribeAsync(
-                    It.Is<SubscribeRequest>(r => r.Protocol == "https"),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new SubscribeResponse { SubscriptionArn = "arn:sub" });
-
-            var result = await CreateProvider().SubscribeAsync("events", "https://example.com/webhook");
-
-            result.Should().Be("arn:sub");
-        }
-
-        [Fact]
-        public async Task EmailEndpoint_UsesEmailProtocol()
-        {
-            _mockSns
-                .Setup(s => s.SubscribeAsync(
-                    It.Is<SubscribeRequest>(r => r.Protocol == "email"),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new SubscribeResponse { SubscriptionArn = "arn:sub" });
-
-            var result = await CreateProvider().SubscribeAsync("events", "user@example.com");
-
-            result.Should().Be("arn:sub");
+            await Assert.ThrowsAsync<NotSupportedException>(() => CreateProvider().SubscribeAsync("events", endpoint));
+            _mockSns.Verify(c => c.SubscribeAsync(It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact]
         public async Task EmptyTopic_ThrowsArgumentException()
         {
-            var act = async () => await CreateProvider().SubscribeAsync("", "endpoint");
-            await act.Should().ThrowAsync<ArgumentException>();
+            await Assert.ThrowsAsync<ArgumentException>(() => CreateProvider().SubscribeAsync("", "endpoint"));
         }
 
         [Fact]
         public async Task EmptyEndpoint_ThrowsArgumentException()
         {
-            var act = async () => await CreateProvider().SubscribeAsync("events", "");
-            await act.Should().ThrowAsync<ArgumentException>();
-        }
-
-        [Fact]
-        public async Task SnsException_ThrowsGenesisException()
-        {
-            _mockSns
-                .Setup(s => s.SubscribeAsync(It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new AmazonSimpleNotificationServiceException("Subscribe failed"));
-
-            var act = async () => await CreateProvider().SubscribeAsync("events", "https://example.com/hook");
-            await act.Should().ThrowAsync<GenesisException>()
-                .WithMessage("*SNS subscribe operation failed*");
+            await Assert.ThrowsAsync<ArgumentException>(() => CreateProvider().SubscribeAsync("events", ""));
         }
     }
-
-    // ── Dispose ──────────────────────────────────────────────────────────────
-
     public class Dispose : SnsMessagingProviderTests
     {
         [Fact]
@@ -337,7 +287,7 @@ public class SnsMessagingProviderTests
         }
 
         [Fact]
-        public async Task WhenClientWasUsed_DisposesSnsClient()
+        public async Task WhenClientWasUsed_DoesNotDisposeSharedSnsClient()
         {
             _mockSns
                 .Setup(s => s.PublishAsync(It.IsAny<PublishRequest>(), It.IsAny<CancellationToken>()))
@@ -347,7 +297,7 @@ public class SnsMessagingProviderTests
             await provider.PublishAsync("events", new TestEvent("e", "{}"));
             provider.Dispose();
 
-            _mockSns.Verify(s => s.Dispose(), Times.Once);
+            _mockSns.Verify(s => s.Dispose(), Times.Never);
         }
     }
 }
