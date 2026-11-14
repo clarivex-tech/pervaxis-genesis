@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Secrets and Parameters: reconstructed source and basic tenant isolation
+
+- Restore buildable contract/AWS projects for Secrets Manager and Parameter Store
+  from surviving API documentation, with new tests and NuGet packaging entries.
+- Tenant reads always use trusted tenant prefixes and scoped providers sharing
+  container-owned SDK clients and tenant-aware caches. Missing tenant context,
+  unsafe names and disabled isolation fail before access.
+- Support string/JSON/binary secret reads and string/JSON/paginated parameter reads.
+  Not-found returns null; service errors and cancellation propagate. Single-value
+  reads have configurable TTL caching; parameter hierarchy reads are not cached.
+- Platform startup access requires separate explicit registration without tenant
+  context. Tenant registration cannot access platform values.
+- **Breaking:** former scope-switch overloads and configurable path/KMS templates
+  are not restored. Use the platform interfaces for startup values and provision
+  data under the documented fixed prefixes. No automatic migration is performed.
+
 ### Basic shared-resource tenancy
 
 - Notifications require tenant context and stamp every SES/SNS send. Providers are
