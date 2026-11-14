@@ -78,7 +78,7 @@ public sealed class SqsOptions
     /// <summary>
     /// Dead-letter queue URL for messages that fail validation.
     /// Used by consumer side to explicitly send invalid messages to DLQ with failure reasons.
-    /// If null, messages that fail validation will be deleted (not recommended for production).
+    /// If null, validation failures throw and leave messages unacknowledged for redelivery.
     /// Example: "https://sqs.ap-south-1.amazonaws.com/123456789012/my-dlq"
     /// </summary>
     public string? DlqUrl { get; set; }

@@ -50,6 +50,8 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
         _mockSqsClient = new Mock<IAmazonSQS>();
         _mockTenantContext = new Mock<ITenantContext>();
         _mockScopeFactory = new Mock<ITenantScopeFactory>();
+        _mockTenantContext.SetupGet(c => c.IsResolved).Returns(true);
+        _mockTenantContext.SetupGet(c => c.TenantId).Returns(new TenantId(ValidTenantId));
 
         _options = new MessagingOptions
         {
@@ -177,7 +179,7 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
             ReceiptHandle = "receipt-valid",
             MessageAttributes = new Dictionary<string, MessageAttributeValue>
             {
-                ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = "acme" }
+                ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
             }
         };
 
@@ -499,263 +501,17 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
         var result = await _provider.ReceiveWithMetadataAsync<Dictionary<string, string>>("test-queue", 10);
 
         // Assert
-        result.Should().HaveCount(2);
+        result.Should().HaveCount(1);
         result.First().TenantId.Should().Be(ValidTenantId);
         result.First().MessageId.Should().Be("msg-1");
-        result.Last().TenantId.Should().Be(ValidTenantId2);
-        result.Last().MessageId.Should().Be("msg-2");
-    }
-
-    #endregion
-
-    #region ProcessAsync Tests
-
-    [Fact(DisplayName = "PHASE1B-PROCESS-1: ProcessAsync sets tenant context per message")]
-    public async Task ProcessAsync_ValidMessages_SetsTenantContext()
-    {
-        // Arrange
-        var messages = new List<Message>
-        {
-            new()
-            {
-                MessageId = "msg-1",
-                Body = "{\"data\":\"test1\"}",
-                ReceiptHandle = "receipt-1",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
-                }
-            }
-        };
-
-        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
-            It.IsAny<ReceiveMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
-
-        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
-            It.IsAny<DeleteMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DeleteMessageResponse());
-
-        var mockScope = new Mock<IDisposable>();
-        TenantId? capturedTenantId = null;
-
-        _mockScopeFactory.Setup(x => x.BeginScope(It.IsAny<TenantId>()))
-            .Callback<TenantId>(tid => capturedTenantId = tid)
-            .Returns(mockScope.Object);
-
-        // Act
-        await _provider.ProcessAsync<Dictionary<string, string>>(
-            "test-queue",
-            async msg =>
-            {
-                await Task.CompletedTask;
-            });
-
-        // Assert
-        capturedTenantId.Should().NotBeNull();
-        capturedTenantId!.Value.Value.Should().Be(ValidTenantId);
-        mockScope.Verify(x => x.Dispose(), Times.Once);
-    }
-
-    [Fact(DisplayName = "PHASE1B-PROCESS-2: ProcessAsync clears context after handler success")]
-    public async Task ProcessAsync_HandlerSucceeds_ClearsContext()
-    {
-        // Arrange
-        var messages = new List<Message>
-        {
-            new()
-            {
-                MessageId = "msg-1",
-                Body = "{\"data\":\"test\"}",
-                ReceiptHandle = "receipt-1",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
-                }
-            }
-        };
-
-        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
-            It.IsAny<ReceiveMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
-
-        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
-            It.IsAny<DeleteMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DeleteMessageResponse());
-
-        var mockScope = new Mock<IDisposable>();
-        _mockScopeFactory.Setup(x => x.BeginScope(It.IsAny<TenantId>()))
-            .Returns(mockScope.Object);
-
-        // Act
-        await _provider.ProcessAsync<Dictionary<string, string>>(
-            "test-queue",
-            async msg => await Task.CompletedTask);
-
-        // Assert
-        mockScope.Verify(x => x.Dispose(), Times.Once, "Context should be cleared after handler");
-    }
-
-    [Fact(DisplayName = "PHASE1B-PROCESS-3: ProcessAsync clears context after handler failure")]
-    public async Task ProcessAsync_HandlerFails_ClearsContext()
-    {
-        // Arrange
-        var messages = new List<Message>
-        {
-            new()
-            {
-                MessageId = "msg-fail",
-                Body = "{\"data\":\"test\"}",
-                ReceiptHandle = "receipt-fail",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
-                }
-            }
-        };
-
-        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
-            It.IsAny<ReceiveMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
-
-        var mockScope = new Mock<IDisposable>();
-        _mockScopeFactory.Setup(x => x.BeginScope(It.IsAny<TenantId>()))
-            .Returns(mockScope.Object);
-
-        // Act
-        await _provider.ProcessAsync<Dictionary<string, string>>(
-            "test-queue",
-            async msg => { throw new InvalidOperationException("Handler failed"); });
-
-        // Assert
-        mockScope.Verify(x => x.Dispose(), Times.Once, "Context must be cleared even after handler failure");
-        
-        // Message should NOT be deleted when handler fails
-        _mockSqsClient.Verify(x => x.DeleteMessageAsync(
-            It.IsAny<DeleteMessageRequest>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [Fact(DisplayName = "PHASE1B-PROCESS-4: ProcessAsync deletes message only after handler success")]
-    public async Task ProcessAsync_HandlerSucceeds_DeletesMessage()
-    {
-        // Arrange
-        var messages = new List<Message>
-        {
-            new()
-            {
-                MessageId = "msg-success",
-                Body = "{\"data\":\"test\"}",
-                ReceiptHandle = "receipt-success",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
-                }
-            }
-        };
-
-        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
-            It.IsAny<ReceiveMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
-
-        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
-            It.IsAny<DeleteMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DeleteMessageResponse());
-
-        var mockScope = new Mock<IDisposable>();
-        _mockScopeFactory.Setup(x => x.BeginScope(It.IsAny<TenantId>()))
-            .Returns(mockScope.Object);
-
-        // Act
-        await _provider.ProcessAsync<Dictionary<string, string>>(
-            "test-queue",
-            async msg => await Task.CompletedTask);
-
-        // Assert
-        _mockSqsClient.Verify(x => x.DeleteMessageAsync(
-            It.Is<DeleteMessageRequest>(r => r.ReceiptHandle == "receipt-success"),
+        _mockSqsClient.Verify(c => c.ChangeMessageVisibilityAsync(
+            It.Is<ChangeMessageVisibilityRequest>(r => r.ReceiptHandle == "receipt-2" && r.VisibilityTimeout == 0),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact(DisplayName = "PHASE1B-LEAK-TEST: Concurrent messages never see another tenant's context")]
-    public async Task ProcessAsync_ConcurrentMessages_NoContextLeakage()
-    {
-        // Arrange
-        var messages = new List<Message>
-        {
-            new()
-            {
-                MessageId = "msg-tenant1",
-                Body = "{\"tenant\":\"1\"}",
-                ReceiptHandle = "receipt-1",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
-                }
-            },
-            new()
-            {
-                MessageId = "msg-tenant2",
-                Body = "{\"tenant\":\"2\"}",
-                ReceiptHandle = "receipt-2",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId2 }
-                }
-            }
-        };
-
-        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
-            It.IsAny<ReceiveMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
-
-        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
-            It.IsAny<DeleteMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DeleteMessageResponse());
-
-        var tenant1Scope = new Mock<IDisposable>();
-        var tenant2Scope = new Mock<IDisposable>();
-
-        _mockScopeFactory.Setup(x => x.BeginScope(It.Is<TenantId>(t => t.Value == ValidTenantId)))
-            .Returns(tenant1Scope.Object);
-        _mockScopeFactory.Setup(x => x.BeginScope(It.Is<TenantId>(t => t.Value == ValidTenantId2)))
-            .Returns(tenant2Scope.Object);
-
-        var processedTenants = new System.Collections.Concurrent.ConcurrentBag<string>();
-        var barrier = new System.Threading.Barrier(2); // Ensure both handlers run concurrently
-
-        // Act
-        await _provider.ProcessAsync<Dictionary<string, string>>(
-            "test-queue",
-            async msg =>
-            {
-                barrier.SignalAndWait(TimeSpan.FromSeconds(5)); // Force concurrent execution
-                await Task.Delay(10); // Simulate work
-                processedTenants.Add(msg["tenant"]);
-            });
-
-        // Assert
-        processedTenants.Should().HaveCount(2);
-        processedTenants.Should().Contain("1");
-        processedTenants.Should().Contain("2");
-
-        // Each tenant's scope was created and disposed
-        _mockScopeFactory.Verify(x => x.BeginScope(It.Is<TenantId>(t => t.Value == ValidTenantId)), Times.Once);
-        _mockScopeFactory.Verify(x => x.BeginScope(It.Is<TenantId>(t => t.Value == ValidTenantId2)), Times.Once);
-        tenant1Scope.Verify(x => x.Dispose(), Times.Once);
-        tenant2Scope.Verify(x => x.Dispose(), Times.Once);
-    }
-
     #endregion
+
+    // Worker lifecycle and concurrent tenant isolation are tested with real async-local scopes in SharedMessagingIsolationTests.
 
     #region Publish-Side Validation Tests
 
@@ -777,55 +533,4 @@ public sealed class SqsMessagingProviderPhase1ConsumerTests : IDisposable
 
     #endregion
 
-    #region Context Lifecycle Tests
-
-    [Fact(DisplayName = "PHASE1B-CONTEXT-1: Context is cleared after ProcessAsync completes")]
-    public async Task ProcessAsync_AfterCompletion_ContextIsCleared()
-    {
-        // Arrange
-        var messages = new List<Message>
-        {
-            new()
-            {
-                MessageId = "msg-1",
-                Body = "{\"data\":\"test\"}",
-                ReceiptHandle = "receipt-1",
-                MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["pervaxis_tenant_id"] = new MessageAttributeValue { DataType = "String", StringValue = ValidTenantId }
-                }
-            }
-        };
-
-        _mockSqsClient.Setup(x => x.ReceiveMessageAsync(
-            It.IsAny<ReceiveMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReceiveMessageResponse { Messages = messages });
-
-        _mockSqsClient.Setup(x => x.DeleteMessageAsync(
-            It.IsAny<DeleteMessageRequest>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DeleteMessageResponse());
-
-        var mockScope = new Mock<IDisposable>();
-        var scopeDisposed = false;
-        mockScope.Setup(x => x.Dispose()).Callback(() => scopeDisposed = true);
-        
-        _mockScopeFactory.Setup(x => x.BeginScope(It.IsAny<TenantId>()))
-            .Returns(mockScope.Object);
-
-        // Act
-        await _provider.ProcessAsync<Dictionary<string, string>>(
-            "test-queue",
-            async msg => await Task.CompletedTask);
-
-        // Allow async cleanup to complete
-        await Task.Delay(50);
-
-        // Assert
-        scopeDisposed.Should().BeTrue("Context scope must be disposed after ProcessAsync completes");
-        mockScope.Verify(x => x.Dispose(), Times.Once);
-    }
-
-    #endregion
 }

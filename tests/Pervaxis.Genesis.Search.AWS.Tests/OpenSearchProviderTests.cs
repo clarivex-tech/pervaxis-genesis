@@ -22,6 +22,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using OpenSearch.Client;
 using OpenSearch.Net;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Search.AWS.Options;
 using Pervaxis.Genesis.Search.AWS.Providers.OpenSearch;
@@ -44,7 +45,18 @@ public abstract class OpenSearchProviderTests
 
     protected static Mock<IOpenSearchClient> CreateMockClient()
     {
-        return new Mock<IOpenSearchClient>();
+        var client = new Mock<IOpenSearchClient>();
+        var real = new OpenSearchClient(new ConnectionSettings(new InMemoryConnection()));
+        client.SetupGet(c => c.SourceSerializer).Returns(real.SourceSerializer);
+        return client;
+    }
+
+    protected static ITenantContext ResolvedTenant()
+    {
+        var context = new Mock<ITenantContext>();
+        context.SetupGet(c => c.IsResolved).Returns(true);
+        context.SetupGet(c => c.TenantId).Returns(new TenantId("acme"));
+        return context.Object;
     }
 
     public class Constructor : OpenSearchProviderTests
@@ -194,7 +206,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
             var document = new TestDocument { Id = "1", Name = "Test" };
 
             // Act & Assert
@@ -209,7 +221,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
             var document = new TestDocument { Id = "1", Name = "Test" };
 
             // Act & Assert
@@ -224,7 +236,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
             var document = new TestDocument { Id = "1", Name = "Test" };
 
             // Act & Assert
@@ -239,7 +251,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.IndexAsync<TestDocument>("test-index", "doc-1", null!);
@@ -259,12 +271,12 @@ public abstract class OpenSearchProviderTests
             mockResponse.Setup(r => r.IsValid).Returns(true);
 
             client.Setup(c => c.IndexAsync(
-                It.IsAny<TestDocument>(),
-                It.IsAny<Func<IndexDescriptor<TestDocument>, IIndexRequest<TestDocument>>>(),
+                It.IsAny<Dictionary<string, object>>(),
+                It.IsAny<Func<IndexDescriptor<Dictionary<string, object>>, IIndexRequest<Dictionary<string, object>>>>(),
                 It.IsAny<CancellationToken>()))
                 .ReturnsAsync(mockResponse.Object);
 
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act
             var result = await provider.IndexAsync("test-index", "doc-1", document);
@@ -272,8 +284,8 @@ public abstract class OpenSearchProviderTests
             // Assert
             result.Should().BeTrue();
             client.Verify(c => c.IndexAsync(
-                document,
-                It.IsAny<Func<IndexDescriptor<TestDocument>, IIndexRequest<TestDocument>>>(),
+                It.Is<Dictionary<string, object>>(d => (string)d["tenantId"] == "acme"),
+                It.IsAny<Func<IndexDescriptor<Dictionary<string, object>>, IIndexRequest<Dictionary<string, object>>>>(),
                 It.IsAny<CancellationToken>()), Times.Once);
         }
 
@@ -296,19 +308,19 @@ public abstract class OpenSearchProviderTests
 
             string? capturedIndex = null;
             client.Setup(c => c.IndexAsync(
-                It.IsAny<TestDocument>(),
-                It.IsAny<Func<IndexDescriptor<TestDocument>, IIndexRequest<TestDocument>>>(),
+                It.IsAny<Dictionary<string, object>>(),
+                It.IsAny<Func<IndexDescriptor<Dictionary<string, object>>, IIndexRequest<Dictionary<string, object>>>>(),
                 It.IsAny<CancellationToken>()))
-                .Callback<TestDocument, Func<IndexDescriptor<TestDocument>, IIndexRequest<TestDocument>>, CancellationToken>(
+                .Callback<Dictionary<string, object>, Func<IndexDescriptor<Dictionary<string, object>>, IIndexRequest<Dictionary<string, object>>>, CancellationToken>(
                     (doc, func, ct) =>
                     {
-                        var descriptor = new IndexDescriptor<TestDocument>(doc);
+                        var descriptor = new IndexDescriptor<Dictionary<string, object>>(doc);
                         var request = func(descriptor);
                         capturedIndex = request.Index?.Name;
                     })
                 .ReturnsAsync(mockResponse.Object);
 
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act
             await provider.IndexAsync("test-index", "doc-1", document);
@@ -328,7 +340,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.SearchAsync<TestDocument>(null!, "test query");
@@ -342,7 +354,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.SearchAsync<TestDocument>("", "test query");
@@ -356,7 +368,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.SearchAsync<TestDocument>("test-index", null!);
@@ -370,7 +382,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.SearchAsync<TestDocument>("test-index", "");
@@ -400,7 +412,7 @@ public abstract class OpenSearchProviderTests
                 It.IsAny<CancellationToken>()))
                 .ReturnsAsync(mockResponse.Object);
 
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act
             var results = await provider.SearchAsync<TestDocument>("test-index", "test query");
@@ -421,7 +433,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.DeleteAsync(null!, "doc-1");
@@ -435,7 +447,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.DeleteAsync("", "doc-1");
@@ -449,7 +461,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.DeleteAsync("test-index", null!);
@@ -467,7 +479,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
             var documents = new Dictionary<string, TestDocument>
             {
                 ["doc-1"] = new TestDocument { Id = "1", Name = "Test 1" }
@@ -485,7 +497,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
             var documents = new Dictionary<string, TestDocument>
             {
                 ["doc-1"] = new TestDocument { Id = "1", Name = "Test 1" }
@@ -503,7 +515,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act & Assert
             var act = async () => await provider.BulkIndexAsync<TestDocument>("test-index", null!);
@@ -517,7 +529,7 @@ public abstract class OpenSearchProviderTests
             var options = CreateValidOptions();
             var logger = Mock.Of<ILogger<OpenSearchProvider>>();
             var client = CreateMockClient();
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
             var documents = new Dictionary<string, TestDocument>();
 
             // Act
@@ -548,7 +560,7 @@ public abstract class OpenSearchProviderTests
                 It.IsAny<CancellationToken>()))
                 .ReturnsAsync(mockResponse.Object);
 
-            var provider = new OpenSearchProvider(options, logger, client.Object);
+            var provider = new OpenSearchProvider(options, logger, client.Object, ResolvedTenant());
 
             // Act
             await provider.BulkIndexAsync("test-index", documents);

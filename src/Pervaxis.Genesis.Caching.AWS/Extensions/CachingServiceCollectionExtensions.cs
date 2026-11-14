@@ -19,6 +19,12 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
+using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Genesis.Caching.AWS.Security;
+using Pervaxis.Genesis.Base.Exceptions;
+using StackExchange.Redis;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
 using Pervaxis.Genesis.Caching.AWS.Options;
 using Pervaxis.Genesis.Caching.AWS.Providers.ElastiCache;
@@ -46,8 +52,7 @@ public static class CachingServiceCollectionExtensions
         // Configure options from configuration
         services.Configure<CachingOptions>(configuration);
 
-        // Register cache provider as singleton (connection pooling)
-        services.TryAddSingleton<ICache, ElastiCacheProvider>();
+        RegisterProvider(services);
 
         return services;
     }
@@ -68,9 +73,34 @@ public static class CachingServiceCollectionExtensions
         // Configure options via action
         services.Configure(configureOptions);
 
-        // Register cache provider as singleton (connection pooling)
-        services.TryAddSingleton<ICache, ElastiCacheProvider>();
+        RegisterProvider(services);
 
         return services;
     }
+
+    private static void RegisterProvider(IServiceCollection services)
+    {
+        services.TryAddSingleton<IConnectionMultiplexer>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<CachingOptions>>().Value;
+            if (!options.Validate())
+            {
+                throw new GenesisConfigurationException(nameof(ElastiCacheProvider), "Invalid caching configuration");
+            }
+            var redis = ConfigurationOptions.Parse(options.ConnectionString);
+            redis.ConnectTimeout = options.ConnectTimeoutMs;
+            redis.SyncTimeout = options.SyncTimeoutMs;
+            redis.AbortOnConnectFail = options.AbortOnConnectFail;
+            redis.Ssl = options.UseSsl && !options.UseLocalEmulator;
+            return ConnectionMultiplexer.Connect(redis);
+        });
+        services.TryAddScoped<TenantCacheKeyResolver>(sp => new TenantCacheKeyResolver(sp.GetService<ITenantContext>()));
+        services.TryAddScoped<ICache>(sp => new ElastiCacheProvider(
+            sp.GetRequiredService<IOptions<CachingOptions>>(),
+            sp.GetRequiredService<ILogger<ElastiCacheProvider>>(),
+            sp.GetRequiredService<IConnectionMultiplexer>(),
+            sp.GetService<ITenantContext>(),
+            sp.GetRequiredService<TenantCacheKeyResolver>()));
+    }
+
 }

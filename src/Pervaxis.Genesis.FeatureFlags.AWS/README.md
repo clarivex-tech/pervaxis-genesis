@@ -1,5 +1,17 @@
 # Pervaxis.Genesis.FeatureFlags.AWS
 
+## Shared resource tenancy
+
+Feature definitions remain shared in AppConfig/SSM configuration. Feature managers,
+snapshots and tenant filters run in a DI scope using the trusted `ITenantContext`;
+evaluation requires a resolved, valid tenant. The `Tenant` filter matches
+`AllowedTenants` with exact tenant IDs. A flag intended for everyone can still be
+enabled globally for all resolved tenants.
+
+Resolve managers and snapshots within each tenant scope, including background jobs.
+`EnableTenantIsolation` controls metric tagging only and cannot bypass evaluation
+checks. Shared configuration is for application flag definitions, not tenant secrets.
+
 AWS AppConfig feature flag provider for the Pervaxis Genesis platform.
 
 ## Overview

@@ -16,6 +16,8 @@
  ************************************************************************
  */
 
+using Pervaxis.Core.Abstractions.MultiTenancy;
+using Pervaxis.Genesis.Base.MultiTenancy;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
@@ -42,6 +44,7 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
     private readonly IAmazonDynamoDB _dynamoDb;
     private readonly S3OverflowStore _s3Overflow;
     private readonly TransactionalLoggingOptions _options;
+    private readonly ITenantContext? _tenantContext;
     private readonly ILogger<DynamoDbTransactionLogStore> _logger;
     private readonly ResiliencePipeline _resiliencePipeline;
 
@@ -61,7 +64,8 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
         IAmazonDynamoDB dynamoDb,
         S3OverflowStore s3Overflow,
         IOptions<TransactionalLoggingOptions> options,
-        ILogger<DynamoDbTransactionLogStore> logger)
+        ILogger<DynamoDbTransactionLogStore> logger,
+        ITenantContext? tenantContext = null)
     {
         ArgumentNullException.ThrowIfNull(dynamoDb);
         ArgumentNullException.ThrowIfNull(s3Overflow);
@@ -71,6 +75,7 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
         _dynamoDb = dynamoDb;
         _s3Overflow = s3Overflow;
         _options = options.Value;
+        _tenantContext = tenantContext;
         _logger = logger;
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
             _options.Resilience, _logger, "TransactionalLogging-DynamoDB");
@@ -79,6 +84,8 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
     /// <inheritdoc/>
     public async Task PersistAsync(TransactionContext context, CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.TenantId);
+        TenantIsolation.RequireTenant(_tenantContext, context.TenantId);
         var stopwatch = Stopwatch.StartNew();
         using var activity = TransactionLogTracing.StartPersistActivity("dynamodb");
 
@@ -141,12 +148,13 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
     public async Task<TransactionLogQueryResult> QueryAsync(
         TransactionLogQuery query, CancellationToken cancellationToken = default)
     {
+        var tenant = TenantIsolation.RequireTenant(_tenantContext, query.TenantId);
         return await _resiliencePipeline.ExecuteAsync(async ct =>
         {
             // Query by TransactionId via GSI
             if (!string.IsNullOrEmpty(query.TransactionId))
             {
-                return await QueryByTransactionIdAsync(query.TransactionId, ct);
+                return await QueryByTransactionIdAsync(query.TransactionId, tenant, ct);
             }
 
             // Query by tenant + date range
@@ -155,16 +163,18 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
     }
 
     private async Task<TransactionLogQueryResult> QueryByTransactionIdAsync(
-        string transactionId, CancellationToken ct)
+        string transactionId, string tenantId, CancellationToken ct)
     {
         var response = await _dynamoDb.QueryAsync(new QueryRequest
         {
             TableName = _options.TableName,
             IndexName = "TransactionId-index",
             KeyConditionExpression = "TransactionId = :txnId",
+            FilterExpression = "TenantId = :tenantId",
             ExpressionAttributeValues = new Dictionary<string, AttributeValue>
             {
-                [":txnId"] = new() { S = transactionId }
+                [":txnId"] = new() { S = transactionId },
+                [":tenantId"] = new() { S = tenantId }
             }
         }, ct);
 
@@ -175,9 +185,7 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
     private async Task<TransactionLogQueryResult> QueryByTenantDateAsync(
         TransactionLogQuery query, CancellationToken ct)
     {
-        var tenantId = _options.EnableTenantIsolation
-            ? (query.TenantId ?? "__global__")
-            : "__global__";
+        var tenantId = TenantIsolation.RequireTenant(_tenantContext, query.TenantId);
 
         var startDate = query.RangeStart?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
             ?? DateTimeOffset.UtcNow.AddDays(-7).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -199,9 +207,8 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
 
     private Dictionary<string, AttributeValue> BuildDynamoDbItem(TransactionContext context)
     {
-        var tenantId = _options.EnableTenantIsolation
-            ? (context.TenantId ?? "__global__")
-            : "__global__";
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.TenantId);
+        var tenantId = TenantIsolation.RequireTenant(_tenantContext, context.TenantId);
 
         var dateKey = context.StartTimestamp.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var ttlEpoch = context.StartTimestamp.AddDays(_options.HotRetentionDays).ToUnixTimeSeconds();
@@ -284,6 +291,6 @@ internal sealed class DynamoDbTransactionLogStore : ITransactionLogStore, IDispo
     /// <inheritdoc/>
     public void Dispose()
     {
-        _dynamoDb.Dispose();
+        // The DI container owns the shared AWS client.
     }
 }

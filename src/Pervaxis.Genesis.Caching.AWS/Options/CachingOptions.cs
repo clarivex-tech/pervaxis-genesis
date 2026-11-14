@@ -39,6 +39,9 @@ public sealed class CachingOptions : GenesisOptionsBase
     /// </summary>
     public TimeSpan DefaultExpiry { get; set; } = TimeSpan.FromHours(1);
 
+    /// <summary>Gets or sets the maximum allowed TTL. Defaults to 24 hours.</summary>
+    public TimeSpan MaxTtl { get; set; } = TimeSpan.FromDays(1);
+
     /// <summary>
     /// Gets or sets the key prefix for all cache keys.
     /// Useful for environment isolation (e.g., "dev", "staging", "prod").
@@ -47,8 +50,8 @@ public sealed class CachingOptions : GenesisOptionsBase
     public string KeyPrefix { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets a value indicating whether to automatically prefix cache keys with tenant ID.
-    /// When enabled, all cache keys are prefixed with "tenant:{tenantId}:".
+    /// Gets or sets the legacy tenant isolation setting, retained for configuration compatibility.
+    /// Tenant prefixes are mandatory; this legacy flag cannot disable isolation.
     /// Default is true.
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
@@ -105,7 +108,7 @@ public sealed class CachingOptions : GenesisOptionsBase
             return false;
         }
 
-        if (DefaultExpiry <= TimeSpan.Zero)
+        if (DefaultExpiry <= TimeSpan.Zero || MaxTtl <= TimeSpan.Zero || DefaultExpiry > MaxTtl)
         {
             return false;
         }

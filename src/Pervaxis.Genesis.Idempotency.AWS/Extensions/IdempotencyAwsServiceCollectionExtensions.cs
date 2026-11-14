@@ -18,6 +18,7 @@
 
 using System.Diagnostics.CodeAnalysis;
 using Amazon.DynamoDBv2;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -92,7 +93,7 @@ public static class IdempotencyAwsServiceCollectionExtensions
         });
 
         // Register the store implementation
-        services.TryAddSingleton<IIdempotencyStore>(sp =>
+        services.TryAddKeyedSingleton<IIdempotencyStore>("Genesis.Idempotency.Backend", (sp, _) =>
         {
             var options = sp.GetRequiredService<IOptions<IdempotencyOptions>>().Value;
 
@@ -119,5 +120,8 @@ public static class IdempotencyAwsServiceCollectionExtensions
                 sp.GetRequiredService<IOptions<IdempotencyOptions>>(),
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<DynamoDbIdempotencyStore>>());
         });
+        services.TryAddScoped<IIdempotencyStore>(sp => new TenantIdempotencyStore(
+            sp.GetRequiredKeyedService<IIdempotencyStore>("Genesis.Idempotency.Backend"),
+            sp.GetService<ITenantContext>()));
     }
 }

@@ -46,8 +46,7 @@ public sealed class IdempotencyOptions : GenesisOptionsBase
     public string HeaderName { get; set; } = "Idempotency-Key";
 
     /// <summary>
-    /// Gets or sets whether to enable per-tenant record isolation.
-    /// When true, records are scoped by tenant ID. Default: true.
+    /// Legacy configuration setting. Tenant validation and per-tenant keys are always enforced.
     /// </summary>
     public bool EnableTenantIsolation { get; set; } = true;
 

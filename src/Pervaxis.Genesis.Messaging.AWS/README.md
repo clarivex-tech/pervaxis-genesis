@@ -8,8 +8,8 @@ AWS messaging provider for the Pervaxis Genesis platform — SQS for queue-based
 
 | Provider | Queue/Topic | Publish | Batch | Receive | Delete | Subscribe |
 |---|---|---|---|---|---|---|
-| `SqsMessagingProvider` | SQS Queue | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `SnsMessagingProvider` | SNS Topic | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `SqsMessagingProvider` | SQS Queue | Yes | Yes | Yes | Yes | No |
+| `SnsMessagingProvider` | SNS Topic | Yes | Yes | No | No | Platform provisioning only |
 
 ## Installation
 
@@ -92,7 +92,7 @@ builder.Services.AddGenesisSqsMessaging(options =>
 ### SNS only
 
 ```csharp
-builder.Services.AddGenesisSnsMess aging(
+builder.Services.AddGenesisSnsMessaging(
     builder.Configuration.GetSection("Messaging"));
 ```
 
@@ -111,7 +111,7 @@ public class OrderService(
     [FromKeyedServices("sns")] IMessaging topic)
 ```
 
-All providers are registered as **Singleton**. AWS clients use `Lazy<T>` and are created on first use.
+Tenant providers and shared consumers are **Scoped**. Keyed AWS clients are container-owned **Singletons**, shared across scopes. Resolve providers inside a DI scope; scope disposal does not dispose AWS clients.
 
 ## Usage
 
@@ -134,26 +134,19 @@ public class OrderService(IMessaging messaging)
 }
 ```
 
-### Receiving and deleting from SQS
+### Receiving and deleting for the current tenant
 
-```csharp
-public class OrderConsumer(IMessaging messaging)
-{
-    public async Task ProcessAsync(CancellationToken ct = default)
+Resolve SqsMessagingProvider in a tenant DI scope. Receive metadata and acknowledge
+with the same instance and logical queue:
+
+    var messages = await messaging.ReceiveWithMetadataAsync<Order>("orders", cancellationToken: ct);
+    foreach (var item in messages)
     {
-        var orders = await messaging.ReceiveAsync<Order>("orders", maxMessages: 5, ct);
-        foreach (var order in orders)
-        {
-            await ProcessOrderAsync(order, ct);
-            // Note: receipt handle is not returned through IMessaging.
-            // For full consume-then-delete, inject SqsMessagingProvider directly
-            // or use a background worker with the AWS SDK.
-        }
+        await ProcessOrderAsync(item.Message, ct);
+        await messaging.DeleteAsync("orders", item.ReceiptHandle, ct);
     }
-}
-```
 
-> **Receipt handle note:** `IMessaging.ReceiveAsync<T>` returns deserialized message bodies only. To delete a message after processing via `DeleteAsync`, you need its receipt handle — which requires direct access to the SQS response. For worker/consumer patterns, consider injecting `SqsMessagingProvider` directly, or using a hosted background service.
+For shared background processing across tenants, use ISharedQueueConsumer below.
 
 ### Publishing to SNS
 
@@ -167,19 +160,90 @@ public class EventPublisher([FromKeyedServices("sns")] IMessaging topic)
 }
 ```
 
-### Subscribing to SNS
+### Shared-topic subscriptions
 
-```csharp
-var subscriptionArn = await topic.SubscribeAsync(
-    "order-events",
-    "https://my-service.example.com/webhooks/orders");
+Subscription management is infrastructure provisioning. SubscribeAsync rejects tenant
+calls with NotSupportedException: it cannot authorize ownership of an arbitrary endpoint
+or safely modify a subscription shared with other tenants.
 
-// Protocol is inferred automatically:
-// https:// → "https"
-// http://  → "http"
-// arn:aws:sqs:... → "sqs"
-// user@domain → "email"
-```
+Provision shared SNS-to-SQS subscriptions with RawMessageDelivery=true so the reserved
+pervaxis_tenant_id attribute reaches SQS. Shared worker subscriptions must accept all
+required tenant traffic. Tenant-specific endpoints require infrastructure to authorize
+endpoint ownership and apply an exact tenant subscription filter. Tenant application
+roles should not have subscription-management permissions.
+
+## Tenant isolation and shared consumers
+
+All tenants use the same configured physical queue/topic per logical destination.
+Single and batch publish stamp pervaxis_tenant_id from ITenantContext, never payload
+properties. Missing, invalid, unresolved or changed tenant contexts are rejected,
+including empty batches. EnableTenantIsolation=false is rejected in every environment.
+
+### Tenant-facing receive and acknowledgement
+
+ReceiveAsync and ReceiveWithMetadataAsync require a resolved tenant and return only
+matching messages. Other tenants' valid messages are released with zero visibility
+delay without deserializing or exposing their payloads, quarantining or acknowledging
+them. DeleteAsync requires a receipt received for that tenant and queue by the same
+provider instance. Use ReceiveWithMetadataAsync and acknowledge in the same DI scope;
+raw SDK receipts and receipts from another provider scope are rejected.
+
+SQS cannot select by tenant attribute. Use the shared worker for normal production
+consumption: tenant-specific polling adds receives for other tenants and cannot
+guarantee fair dispatch.
+
+### Trusted shared-queue worker
+
+Register this separately in the worker host, with Core's ambient ITenantContext and
+ITenantScopeFactory configured. Never expose ISharedQueueConsumer through tenant
+endpoints. Registration accepts configuration or an options action:
+
+    builder.Services.AddGenesisSharedQueueConsumer(
+        builder.Configuration.GetSection("Messaging"));
+
+A hosted service creates a DI scope for each poll and resolves the consumer outside
+any active tenant scope:
+
+    await using var pollScope = scopeFactory.CreateAsyncScope();
+    var consumer = pollScope.ServiceProvider.GetRequiredService<ISharedQueueConsumer>();
+    await consumer.ProcessAsync<OrderEvent>("orders", async (message, services, ct) =>
+    {
+        var handler = services.GetRequiredService<OrderEventHandler>();
+        await handler.HandleAsync(message, ct);
+    }, cancellationToken: stoppingToken);
+
+Each validated message gets its own tenant scope and async DI scope. Resolve
+tenant-sensitive dependencies from the supplied services, not from the hosted service
+or polling scope. Overlapping handlers have independent contexts. The worker checks
+the scoped tenant context before and after the handler, disposes handler dependencies
+and the tenant scope, then acknowledges success. Tenant IDs must also satisfy the
+registered Core scope factory's rules, for example GUID-only IDs.
+
+Failed handlers, mismatched contexts, scope disposal failures and canceled work are
+not acknowledged. Cancellation propagates and scopes are always cleaned up. Handlers
+must tolerate SQS redelivery. Configure visibility timeout for handler duration;
+automatic visibility renewal is not implemented.
+
+Missing/invalid tenant attributes and malformed/null payloads are sent to the configured
+DLQ before acknowledging the source. An absent/failing DLQ leaves the source
+unacknowledged. Provision the DLQ separately from the source. Only an exact String
+tenant attribute is accepted; reserved platform identities, alternate data types and
+conflicting casing variants are rejected.
+
+### Trust boundary and compatibility
+
+Queue/topic policies must restrict writers to trusted tenant-stamping producers.
+A message attribute is not authentication: direct SDK writers can forge it. The worker
+trusts authenticated infrastructure ingress, not tenant IDs inside business payloads.
+
+Breaking changes: providers are Scoped; isolation cannot be disabled; receives return
+only matching tenants; acknowledgement requires a receipt from the same provider scope;
+cross-tenant processing requires explicit worker registration; tenant subscription
+management is disabled. Existing physical mappings and pervaxis_tenant_id wire
+attributes are unchanged.
+
+This change does not provision resources, implement per-tenant resources or
+platform-message APIs, or add FIFO-specific grouping/deduplication controls.
 
 ## IAM Permissions
 
@@ -193,7 +257,7 @@ var subscriptionArn = await topic.SubscribeAsync(
     "sqs:SendMessageBatch",
     "sqs:ReceiveMessage",
     "sqs:DeleteMessage",
-    "sqs:DeleteMessageBatch",
+    "sqs:ChangeMessageVisibility",
     "sqs:GetQueueAttributes"
   ],
   "Resource": "arn:aws:sqs:ap-south-1:123456789012:*"
@@ -207,8 +271,7 @@ var subscriptionArn = await topic.SubscribeAsync(
   "Effect": "Allow",
   "Action": [
     "sns:Publish",
-    "sns:PublishBatch",
-    "sns:Subscribe"
+    "sns:PublishBatch"
   ],
   "Resource": "arn:aws:sns:ap-south-1:123456789012:*"
 }
@@ -249,5 +312,5 @@ awslocal sns create-topic --name my-topic
 | `GenesisException: SQS publish failed` | Queue URL wrong or queue doesn't exist | Verify `DefaultQueueUrl` or `QueueUrlMappings` |
 | `GenesisException: SNS publish failed` | Topic ARN wrong | Verify `DefaultTopicArn` or `TopicArnMappings` |
 | `NotSupportedException` on `ReceiveAsync` | Using `SnsMessagingProvider` | Use `SqsMessagingProvider` for receive |
-| `NotSupportedException` on `SubscribeAsync` | Using `SqsMessagingProvider` | Use `SnsMessagingProvider` for subscribe |
+| SubscribeAsync rejected | Tenant messaging cannot manage shared subscriptions | Provision through platform infrastructure |
 | 403 / credentials error | Missing IAM permissions or no credentials | Check IAM policy and AWS credential chain |

@@ -35,12 +35,13 @@ using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Messaging.AWS.Caching;
 using Pervaxis.Genesis.Messaging.AWS.Options;
+using Pervaxis.Genesis.Messaging.AWS.Security;
 
 namespace Pervaxis.Genesis.Messaging.AWS.Providers.Sns;
 
 /// <summary>
 /// SNS implementation of the <see cref="IMessaging"/> abstraction.
-/// Supports single and batch publish to topics, and topic subscription management.
+/// Supports tenant-stamped single and batch publication to shared topics.
 /// </summary>
 /// <remarks>
 /// <see cref="ReceiveAsync{T}"/> and <see cref="DeleteAsync"/> are not supported by SNS
@@ -54,6 +55,9 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     private readonly MessagingOptions _options;
     private readonly ILogger<SnsMessagingProvider> _logger;
     private readonly ITenantContext? _tenantContext;
+    private readonly TenantMessagingGuard _guard;
+    private readonly bool _ownsClient;
+    private bool _disposed;
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
@@ -99,8 +103,8 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     /// </summary>
     /// <param name="options">Messaging configuration options.</param>
     /// <param name="logger">Logger instance.</param>
-    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
-    /// <param name="environment">Optional environment name for validation (defaults to Production).</param>
+    /// <param name="tenantContext">Current tenant context; publication fails when it is unresolved.</param>
+    /// <param name="environment">Legacy compatibility parameter; isolation cannot be disabled in any environment.</param>
     /// <param name="timeProvider">Optional time provider for testing (defaults to system time).</param>
     public SnsMessagingProvider(
         IOptions<MessagingOptions> options,
@@ -115,11 +119,13 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _guard = new TenantMessagingGuard(tenantContext);
         _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions(environment);
+        ValidateOptions();
 
-        _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateClient);
+        _ownsClient = true;
+        _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => CreateClient(_options));
         _jsonOptions = BuildJsonOptions();
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
             _options.Resilience,
@@ -129,7 +135,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         _logger.LogInformation(
             "SnsMessagingProvider initialized for region {Region}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _tenantContext?.IsResolved == true,
             _options.Resilience.Enabled);
     }
 
@@ -151,9 +157,10 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
+        _guard = new TenantMessagingGuard(tenantContext);
         _timeProvider = timeProvider ?? TimeProvider.System;
 
-        ValidateOptions("Test"); // Internal constructor always allows disabled isolation
+        ValidateOptions();
 
         _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => snsClient);
         _jsonOptions = BuildJsonOptions();
@@ -180,6 +187,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         ArgumentNullException.ThrowIfNull(message);
 
         var topicArn = ResolveTopicArn(destination);
+        RequireTenant();
         var body = Serialize(message);
 
         try
@@ -233,6 +241,10 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             // Pass through access denied and throttling unchanged for IAM policy detection
             throw;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (GenesisException)
         {
             // Pass through Genesis exceptions without wrapping
@@ -270,6 +282,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(messages);
 
+        RequireTenant();
         var messageList = messages.ToList();
         if (messageList.Count == 0)
         {
@@ -355,6 +368,10 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         {
             throw;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (GenesisException)
         {
             // Pass through Genesis exceptions without wrapping
@@ -405,113 +422,33 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
     }
 
     /// <inheritdoc/>
-    public async Task<string> SubscribeAsync(
-        string topic,
-        string endpoint,
-        CancellationToken cancellationToken = default)
+    public Task<string> SubscribeAsync(
+        string topic, string endpoint, CancellationToken cancellationToken = default)
     {
-        var stopwatch = Stopwatch.StartNew();
-        using var activity = PervaxisActivitySource.StartActivity("messaging.subscribe", ActivityKind.Client);
-        activity?.SetTag("messaging.system", "sns");
-        activity?.SetTag("messaging.destination", topic);
-        activity?.SetTag("messaging.operation", "subscribe");
-        AddTenantTags(activity);
-
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
-
-        var topicArn = ResolveTopicArn(topic);
-
-        try
-        {
-            // Infer protocol from endpoint format
-            var protocol = InferProtocol(endpoint);
-
-            var request = new SubscribeRequest
-            {
-                TopicArn = topicArn,
-                Protocol = protocol,
-                Endpoint = endpoint,
-                // Enable raw message delivery for SQS subscriptions (Phase 1 requirement)
-                // This ensures message attributes (including pervaxis_tenant_id) are passed through
-                Attributes = protocol == "sqs"
-                    ? new Dictionary<string, string> { ["RawMessageDelivery"] = "true" }
-                    : new Dictionary<string, string>()
-            };
-
-            var response = await _resiliencePipeline.ExecuteAsync(
-                async ct => await _snsClient.Value.SubscribeAsync(request, ct).ConfigureAwait(false),
-                cancellationToken);
-
-            activity?.SetTag("messaging.subscription_arn", response.SubscriptionArn);
-            _logger.LogInformation(
-                "Subscribed endpoint {Endpoint} to SNS topic {TopicArn} with protocol {Protocol} " +
-                "(SubscriptionArn={SubscriptionArn}, RawMessageDelivery={RawDelivery})",
-                endpoint, topicArn, protocol, response.SubscriptionArn, protocol == "sqs");
-
-            var tags = GetMetricTags("subscribe", "success", "sns");
-            _operationsCounter.Add(1, tags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
-
-            return response.SubscriptionArn;
-        }
-        catch (NotFoundException ex)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "SNS topic {TopicArn} does not exist. Resource must be provisioned.", topicArn);
-
-            // Invalidate cache on not-found error
-            InvalidateTopicCache(topic, MessageScope.Tenant);
-
-            var errorTags = GetMetricTags("subscribe", "error", "sns");
-            _operationsCounter.Add(1, errorTags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
-
-            throw new GenesisException(
-                nameof(SnsMessagingProvider),
-                $"Topic '{topicArn}' not provisioned. Ensure tenant messaging resources are created before use.",
-                ex,
-                "TOPIC_NOT_FOUND",
-                new Dictionary<string, object> { ["TopicArn"] = topicArn });
-        }
-        catch (Exception ex) when (ex is AuthorizationErrorException or ThrottledException)
-        {
-            throw;
-        }
-        catch (GenesisException)
-        {
-            // Pass through Genesis exceptions without wrapping
-            throw;
-        }
-        catch (Exception ex)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            _logger.LogError(ex, "SNS subscribe operation failed");
-
-            var errorTags = GetMetricTags("subscribe", "error", "sns");
-            _operationsCounter.Add(1, errorTags);
-            _operationDuration.Record(stopwatch.Elapsed.TotalMilliseconds, errorTags);
-
-            throw new GenesisException(
-                nameof(SnsMessagingProvider),
-                "SNS subscribe operation failed. See inner exception for details.",
-                ex);
-        }
+        RequireTenant();
+        throw new NotSupportedException(
+            "Shared-topic subscriptions must be provisioned by the platform, not tenant messaging code.");
     }
-
     /// <summary>
     /// Disposes the SNS client if it was created.
     /// </summary>
     public void Dispose()
     {
-        if (_snsClient.IsValueCreated)
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        if (_ownsClient && _snsClient.IsValueCreated)
         {
             _snsClient.Value.Dispose();
             _logger.LogInformation("SnsMessagingProvider client disposed");
         }
     }
 
-    private void ValidateOptions(string? environment = null)
+    private void ValidateOptions()
     {
         if (!_options.Validate())
         {
@@ -520,38 +457,19 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
                 "Invalid messaging configuration");
         }
 
-        // SECURITY: Tenant isolation can ONLY be disabled in Development and Test environments (allow-list)
-        if (!_options.EnableTenantIsolation)
-        {
-            var env = environment ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? string.Empty;
-            
-            // Allow-list: only Development and Test can disable isolation
-            var isAllowed = env.Equals("Development", StringComparison.OrdinalIgnoreCase) ||
-                           env.Equals("Test", StringComparison.OrdinalIgnoreCase);
-            
-            if (!isAllowed)
-            {
-                // Fail closed: missing env or any non-allowed environment is rejected
-                var envDisplay = string.IsNullOrEmpty(env) ? "(not set)" : env;
-                throw new GenesisConfigurationException(
-                    nameof(SnsMessagingProvider),
-                    $"Tenant isolation cannot be disabled in environment '{envDisplay}'. " +
-                    "EnableTenantIsolation=false is ONLY allowed in 'Development' or 'Test' environments.");
-            }
-        }
     }
 
-    private IAmazonSimpleNotificationService CreateClient()
+    internal static IAmazonSimpleNotificationService CreateClient(MessagingOptions options)
     {
+        options.Validate();
         var config = new AmazonSimpleNotificationServiceConfig
         {
-            RegionEndpoint = RegionEndpoint.GetBySystemName(_options.Region)
+            RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region)
         };
 
-        if (_options.UseLocalEmulator && _options.LocalEmulatorUrl is not null)
+        if (options.UseLocalEmulator && options.LocalEmulatorUrl is not null)
         {
-            config.ServiceURL = _options.LocalEmulatorUrl.AbsoluteUri;
-            _logger.LogInformation("SnsMessagingProvider using local emulator: {Url}", _options.LocalEmulatorUrl);
+            config.ServiceURL = options.LocalEmulatorUrl.AbsoluteUri;
         }
 
         return new AmazonSimpleNotificationServiceClient(config);
@@ -760,31 +678,6 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
         }
     }
 
-    private static string InferProtocol(string endpoint)
-    {
-        if (endpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            return "https";
-        }
-
-        if (endpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-        {
-            return "http";
-        }
-
-        if (endpoint.StartsWith("arn:aws:sqs:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "sqs";
-        }
-
-        if (endpoint.Contains('@', StringComparison.Ordinal))
-        {
-            return "email";
-        }
-
-        return "sqs";
-    }
-
     private string Serialize<T>(T value) => JsonSerializer.Serialize(value, _jsonOptions);
 
     private static JsonSerializerOptions BuildJsonOptions() => new()
@@ -795,66 +688,26 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
 
     private void AddTenantAttributes(Dictionary<string, MessageAttributeValue> attributes)
     {
-        // SECURITY: First, reject any caller-supplied reserved attributes (pervaxis_* prefix)
-        // This prevents callers from spoofing tenant IDs or other platform-controlled metadata
-        var reservedKeys = attributes.Keys
-            .Where(k => k.StartsWith(MessagingConstants.ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (reservedKeys.Count > 0)
+        if (attributes.Keys.Any(k => k.StartsWith(MessagingConstants.ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase)))
         {
-            _logger.LogError(
-                "Caller attempted to supply reserved message attributes: {ReservedKeys}. " +
-                "Attributes with prefix '{Prefix}' are platform-controlled and will be rejected.",
-                string.Join(", ", reservedKeys),
-                MessagingConstants.ReservedAttributePrefix);
-
-            throw new GenesisException(
-                nameof(SnsMessagingProvider),
-                $"Reserved message attributes cannot be set by callers. " +
-                $"The following reserved attributes were rejected: {string.Join(", ", reservedKeys)}. " +
-                $"Attributes prefixed with '{MessagingConstants.ReservedAttributePrefix}' are platform-controlled.",
-                MessagingConstants.FailureReasons.ReservedAttributeSupplied,
-                new Dictionary<string, object>
-                {
-                    ["ReservedKeys"] = reservedKeys,
-                    ["ReservedPrefix"] = MessagingConstants.ReservedAttributePrefix
-                });
+            throw new GenesisException(nameof(SnsMessagingProvider),
+                "Reserved message attributes cannot be set by callers.",
+                MessagingConstants.FailureReasons.ReservedAttributeSupplied, null);
         }
-
-        // SECURITY: Fail closed - if tenant isolation is enabled but context not resolved, reject
-        if (_options.EnableTenantIsolation)
+        attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
         {
-            if (_tenantContext?.IsResolved != true)
-            {
-                _logger.LogError(
-                    "Tenant isolation is enabled but ITenantContext is not resolved. " +
-                    "Cannot publish message without tenant context.");
-
-                throw new GenesisException(
-                    nameof(SnsMessagingProvider),
-                    "Tenant context not resolved. Cannot publish messages when tenant isolation is enabled. " +
-                    "Ensure ITenantContext is properly configured and a tenant has been resolved for this request.",
-                    "TENANT_CONTEXT_NOT_RESOLVED",
-                    null);
-            }
-
-            // Inject tenant ID from ITenantContext (NEVER trust caller-supplied values)
-            attributes[MessagingConstants.TenantIdAttribute] = new MessageAttributeValue
-            {
-                DataType = "String",
-                StringValue = _tenantContext.TenantId.Value
-            };
-
-            _logger.LogDebug(
-                "Stamped message with tenant ID: {TenantId}",
-                _tenantContext.TenantId.Value);
-        }
+            DataType = "String", StringValue = RequireTenant()
+        };
     }
 
+    private string RequireTenant()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _guard.RequireTenant();
+    }
     private void AddTenantTags(Activity? activity)
     {
-        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        if (activity == null || _tenantContext?.IsResolved != true)
         {
             return;
         }
@@ -871,7 +724,7 @@ public sealed class SnsMessagingProvider : IMessaging, IDisposable
             { "result", result },
             { "provider", provider }
         };
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        if (_tenantContext?.IsResolved == true)
         {
             tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
         }

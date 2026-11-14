@@ -24,6 +24,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Notifications.AWS.Options;
 using Pervaxis.Genesis.Notifications.AWS.Providers;
@@ -53,6 +54,13 @@ public class AwsNotificationProviderTests
         };
     }
 
+    private static ITenantContext ResolvedTenant()
+    {
+        var tenant = new Mock<ITenantContext>();
+        tenant.SetupGet(c => c.IsResolved).Returns(true);
+        tenant.SetupGet(c => c.TenantId).Returns(new TenantId("acme"));
+        return tenant.Object;
+    }
     #region Constructor Tests
 
     [Fact]
@@ -63,7 +71,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Assert
         provider.Should().NotBeNull();
@@ -77,7 +85,7 @@ public class AwsNotificationProviderTests
             null!,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Assert
         act.Should().Throw<ArgumentNullException>()
@@ -92,7 +100,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             null!,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Assert
         act.Should().Throw<ArgumentNullException>()
@@ -107,7 +115,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             null!,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Assert
         act.Should().Throw<ArgumentNullException>()
@@ -145,7 +153,7 @@ public class AwsNotificationProviderTests
         // Act
         var act = () => new AwsNotificationProvider(
             mockOptions.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Assert
         act.Should().Throw<GenesisConfigurationException>();
@@ -169,7 +177,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var result = await provider.SendEmailAsync(
@@ -202,7 +210,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         await provider.SendEmailAsync(
@@ -239,7 +247,7 @@ public class AwsNotificationProviderTests
             optionsWithConfigSet,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         await provider.SendEmailAsync(
@@ -262,7 +270,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendEmailAsync(null!, "Subject", "Body");
@@ -280,7 +288,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendEmailAsync("test@example.com", "", "Body");
@@ -303,7 +311,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendEmailAsync(
@@ -334,7 +342,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         var templateData = new Dictionary<string, string>
         {
@@ -365,7 +373,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendTemplatedEmailAsync(
@@ -391,7 +399,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendTemplatedEmailAsync(
@@ -422,7 +430,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var result = await provider.SendSmsAsync("+1234567890", "Test SMS message");
@@ -437,7 +445,7 @@ public class AwsNotificationProviderTests
     }
 
     [Fact]
-    public async Task SendSmsAsync_WithSmsTopicArn_ShouldUseTopicArn()
+    public async Task SendSmsAsync_WithSmsTopicArn_StillTargetsRequestedPhone()
     {
         // Arrange
         var optionsWithTopic = new NotificationOptions
@@ -456,7 +464,7 @@ public class AwsNotificationProviderTests
             optionsWithTopic,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         await provider.SendSmsAsync("+1234567890", "Test SMS");
@@ -464,9 +472,9 @@ public class AwsNotificationProviderTests
         // Assert
         _mockSnsClient.Verify(x => x.PublishAsync(
             It.Is<PublishRequest>(r =>
-                r.TopicArn == "arn:aws:sns:us-east-1:123456789012:sms-topic" &&
-                r.PhoneNumber == null &&
-                r.MessageAttributes.ContainsKey("phoneNumber")),
+                r.TopicArn == null &&
+                r.PhoneNumber == "+1234567890" &&
+                r.MessageAttributes["pervaxis_tenant_id"].StringValue == "acme"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -478,7 +486,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendSmsAsync(null!, "Message");
@@ -501,7 +509,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendSmsAsync("+1234567890", "Test");
@@ -543,7 +551,7 @@ public class AwsNotificationProviderTests
             optionsWithPush,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var result = await provider.SendPushAsync(
@@ -585,7 +593,7 @@ public class AwsNotificationProviderTests
             optionsWithPush,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         var customData = new Dictionary<string, string>
         {
@@ -617,7 +625,7 @@ public class AwsNotificationProviderTests
             _validOptions, // No PushPlatformApplicationArn
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendPushAsync(
@@ -645,7 +653,7 @@ public class AwsNotificationProviderTests
             optionsWithPush,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         var act = async () => await provider.SendPushAsync(null!, "Title", "Message");
@@ -667,7 +675,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         provider.Dispose();
@@ -684,7 +692,7 @@ public class AwsNotificationProviderTests
             _validOptions,
             _mockSesClient.Object,
             _mockSnsClient.Object,
-            _mockLogger.Object);
+            _mockLogger.Object, ResolvedTenant());
 
         // Act
         provider.Dispose();

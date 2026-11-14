@@ -22,6 +22,15 @@ Pervaxis Genesis provides production-ready AWS service integrations for enterpri
 
 **Note:** All provider packages use the `.AWS` suffix to support future multi-cloud implementations (e.g., `.Azure`, `.GCP`).
 
+Secrets and configuration packages:
+
+| Package | Purpose |
+| --- | --- |
+| [Pervaxis.Genesis.Secrets](src/Pervaxis.Genesis.Secrets/README.md) | Secret read contracts |
+| [Pervaxis.Genesis.Secrets.AWS](src/Pervaxis.Genesis.Secrets.AWS/README.md) | Secrets Manager reads with tenant prefixes and explicit platform startup access |
+| [Pervaxis.Genesis.Parameters](src/Pervaxis.Genesis.Parameters/README.md) | Parameter read contracts |
+| [Pervaxis.Genesis.Parameters.AWS](src/Pervaxis.Genesis.Parameters.AWS/README.md) | Parameter Store reads with tenant hierarchy isolation |
+
 ## Prerequisites
 
 - .NET SDK 10.0.200 or later

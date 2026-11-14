@@ -17,6 +17,7 @@
  */
 
 using Microsoft.Extensions.Configuration;
+using Pervaxis.Genesis.Base.Validation;
 using Microsoft.FeatureManagement;
 using Pervaxis.Core.Abstractions.MultiTenancy;
 
@@ -25,7 +26,7 @@ namespace Pervaxis.Genesis.FeatureFlags.AWS.Filters;
 /// <summary>
 /// Feature filter that evaluates flag state based on the current tenant identity.
 /// Matches the current tenant ID against a configured list of allowed tenants
-/// using case-insensitive ordinal comparison.
+/// using exact ordinal comparison.
 /// </summary>
 [FilterAlias("Tenant")]
 public sealed class TenantFilter : IFeatureFilter
@@ -56,6 +57,10 @@ public sealed class TenantFilter : IFeatureFilter
         }
 
         var tenantId = _tenantContext.TenantId.Value.ToString();
+        if (!TenantIdValidator.IsValid(tenantId) || tenantId.Any(char.IsControl))
+        {
+            return Task.FromResult(false);
+        }
         var allowedTenants = context.Parameters
             .GetSection("AllowedTenants")
             .Get<string[]>() ?? [];
@@ -66,7 +71,7 @@ public sealed class TenantFilter : IFeatureFilter
         }
 
         var isAllowed = allowedTenants.Contains(
-            tenantId, StringComparer.OrdinalIgnoreCase);
+            tenantId, StringComparer.Ordinal);
 
         return Task.FromResult(isAllowed);
     }

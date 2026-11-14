@@ -18,6 +18,7 @@
 
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenSearch.Client;
@@ -29,6 +30,7 @@ using Pervaxis.Core.Observability.Metrics;
 using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
+using Pervaxis.Genesis.Base.Validation;
 using Pervaxis.Genesis.Search.AWS.Options;
 
 namespace Pervaxis.Genesis.Search.AWS.Providers.OpenSearch;
@@ -44,6 +46,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     private readonly Lazy<IOpenSearchClient> _client;
     private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+    private ConnectionSettings? _ownedSettings;
+    private readonly object _tenantLock = new();
+    private string? _boundTenant;
+    internal const string TenantField = "tenantId";
 
     // Metrics
     private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
@@ -66,7 +72,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     /// </summary>
     /// <param name="options">Search configuration options.</param>
     /// <param name="logger">Logger instance.</param>
-    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
+    /// <param name="tenantContext">Current tenant context; operations fail when unresolved.</param>
     public OpenSearchProvider(
         IOptions<SearchOptions> options,
         ILogger<OpenSearchProvider> logger,
@@ -81,25 +87,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
         _options.Validate();
 
-        _client = new Lazy<IOpenSearchClient>(() =>
-        {
-            var uri = new Uri(_options.DomainEndpoint);
-            var connectionSettings = new ConnectionSettings(uri)
-                .RequestTimeout(TimeSpan.FromSeconds(_options.RequestTimeoutSeconds))
-                .MaximumRetries(_options.MaxRetries);
-
-            if (_options.EnableDebugMode)
-            {
-                connectionSettings.EnableDebugMode();
-            }
-
-            if (!string.IsNullOrWhiteSpace(_options.Username) && !string.IsNullOrWhiteSpace(_options.Password))
-            {
-                connectionSettings.BasicAuthentication(_options.Username, _options.Password);
-            }
-
-            return new OpenSearchClient(connectionSettings);
-        });
+        _client = new Lazy<IOpenSearchClient>(() => new OpenSearchClient(_ownedSettings = CreateSettings(_options)));
 
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
             _options.Resilience,
@@ -109,12 +97,12 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         _logger.LogInformation(
             "OpenSearchProvider initialized for domain {DomainEndpoint}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.DomainEndpoint,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _tenantContext?.IsResolved == true,
             _options.Resilience.Enabled);
     }
 
     /// <summary>
-    /// Internal constructor for testing with injected client.
+    /// Initializes a scoped provider with a container-owned or test client.
     /// </summary>
     internal OpenSearchProvider(
         IOptions<SearchOptions> options,
@@ -139,6 +127,27 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         _options.Validate();
     }
 
+    internal static ConnectionSettings CreateSettings(SearchOptions options)
+    {
+        options.Validate();
+        var uri = new Uri(options.DomainEndpoint);
+        var connectionSettings = new ConnectionSettings(uri);
+        connectionSettings.RequestTimeout(TimeSpan.FromSeconds(options.RequestTimeoutSeconds));
+        connectionSettings.MaximumRetries(options.MaxRetries);
+
+        if (options.EnableDebugMode)
+        {
+            connectionSettings.EnableDebugMode();
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.Username) && !string.IsNullOrWhiteSpace(options.Password))
+        {
+            connectionSettings.BasicAuthentication(options.Username, options.Password);
+        }
+
+        return connectionSettings;
+    }
+
     /// <inheritdoc />
     public async Task<bool> IndexAsync<T>(
         string index,
@@ -159,7 +168,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
         try
         {
+            var tenant = RequireTenant();
             var fullIndex = GetFullIndexName(index);
+            var physicalId = GetDocumentId(tenant, id);
+            var stamped = StampDocument(document, tenant);
 
             _logger.LogDebug(
                 "Indexing document {Id} to index {Index}",
@@ -167,9 +179,9 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 fullIndex);
 
             var response = await _resiliencePipeline.ExecuteAsync(
-                async ct => await _client.Value.IndexAsync(document, idx => idx
+                async ct => await _client.Value.IndexAsync(stamped, idx => idx
                     .Index(fullIndex)
-                    .Id(id), ct),
+                    .Id(physicalId), ct),
                 cancellationToken);
 
             if (!response.IsValid)
@@ -241,6 +253,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
         try
         {
+            var tenant = RequireTenant();
             var fullIndex = GetFullIndexName(index);
 
             _logger.LogDebug(
@@ -251,9 +264,9 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
             var response = await _resiliencePipeline.ExecuteAsync(
                 async ct => await _client.Value.SearchAsync<T>(s => s
                     .Index(fullIndex)
-                    .Query(q => q
-                        .QueryString(qs => qs
-                            .Query(query)))
+                    .Query(q => q.Bool(b => b
+                        .Filter(f => f.Term(t => t.Field(TenantField + ".keyword").Value(tenant)))
+                        .Must(m => m.QueryString(qs => qs.Query(query)))))
                     .Size(_options.DefaultPageSize), ct),
                 cancellationToken);
 
@@ -329,7 +342,9 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
 
         try
         {
+            var tenant = RequireTenant();
             var fullIndex = GetFullIndexName(index);
+            var physicalId = GetDocumentId(tenant, id);
 
             _logger.LogDebug(
                 "Deleting document {Id} from index {Index}",
@@ -337,7 +352,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
                 fullIndex);
 
             var response = await _resiliencePipeline.ExecuteAsync(
-                async ct => await _client.Value.DeleteAsync<object>(id, d => d
+                async ct => await _client.Value.DeleteAsync<object>(physicalId, d => d
                     .Index(fullIndex), ct),
                 cancellationToken);
 
@@ -411,6 +426,8 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
         activity?.SetTag("search.document_count", documents.Count);
         AddTenantTags(activity);
 
+        var tenant = RequireTenant();
+        GetFullIndexName(index);
         if (documents.Count == 0)
         {
             _logger.LogDebug("No documents to bulk index, skipping");
@@ -429,10 +446,10 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
             var bulkDescriptor = new BulkDescriptor();
             foreach (var kvp in documents)
             {
-                bulkDescriptor.Index<T>(i => i
+                bulkDescriptor.Index<Dictionary<string, object>>(i => i
                     .Index(fullIndex)
-                    .Id(kvp.Key)
-                    .Document(kvp.Value));
+                    .Id(GetDocumentId(tenant, kvp.Key))
+                    .Document(StampDocument(kvp.Value, tenant)));
             }
 
             var response = await _resiliencePipeline.ExecuteAsync(
@@ -506,22 +523,70 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
     /// </summary>
     private string GetFullIndexName(string index)
     {
-        var parts = new List<string>();
-
-        if (!string.IsNullOrWhiteSpace(_options.IndexPrefix))
+        var fullIndex = string.IsNullOrWhiteSpace(_options.IndexPrefix)
+            ? index : _options.IndexPrefix.TrimEnd('-') + "-" + index;
+        if (fullIndex.Length > 255 || fullIndex.Length == 0
+            || !char.IsAsciiLetterOrDigit(fullIndex[0])
+            || fullIndex.Any(c => !(c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')))
         {
-            parts.Add(_options.IndexPrefix.TrimEnd('-').ToLowerInvariant());
+            throw Failure("A concrete lowercase index name is required.", "InvalidIndexName");
         }
-
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
-        {
-            parts.Add($"tenant-{_tenantContext.TenantId.Value.ToLowerInvariant()}");
-        }
-
-        parts.Add(index.ToLowerInvariant());
-
-        return parts.Count > 1 ? string.Join("-", parts) : index.ToLowerInvariant();
+        return fullIndex;
     }
+
+    private string RequireTenant()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_tenantContext?.IsResolved != true)
+        {
+            throw Failure("Tenant context not resolved.", "TenantContextNotResolved");
+        }
+        var tenant = _tenantContext.TenantId.Value;
+        if (!TenantIdValidator.IsValid(tenant) || tenant.Any(char.IsControl))
+        {
+            throw Failure("Invalid tenant ID.", "InvalidTenantId");
+        }
+        lock (_tenantLock)
+        {
+            if (_boundTenant is not null && !StringComparer.Ordinal.Equals(_boundTenant, tenant))
+            {
+                throw Failure("Tenant changed during the provider scope.", "TenantContextChanged");
+            }
+            _boundTenant = tenant;
+        }
+        return tenant;
+    }
+
+    private static string GetDocumentId(string tenant, string id)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        var physicalId = tenant + ":" + id;
+        if (id.Any(char.IsControl) || Encoding.UTF8.GetByteCount(physicalId) > 512)
+        {
+            throw Failure("Invalid document ID or ID exceeds 512 UTF-8 bytes.", "InvalidDocumentId");
+        }
+        return physicalId;
+    }
+
+    private Dictionary<string, object> StampDocument<T>(T document, string tenant) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        using var stream = new MemoryStream();
+        _client.Value.SourceSerializer.Serialize(document, stream);
+        stream.Position = 0;
+        var fields = _client.Value.SourceSerializer.Deserialize<Dictionary<string, object>>(stream)
+            ?? throw Failure("Document must be a JSON object.", "InvalidDocument");
+        if (fields.Keys.Any(k => k.Equals(TenantField, StringComparison.OrdinalIgnoreCase)
+            || k.StartsWith(TenantField + ".", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw Failure("tenantId is reserved for the provider.", "ReservedTenantField");
+        }
+        fields.Add(TenantField, tenant);
+        return fields;
+    }
+
+    private static GenesisException Failure(string message, string code)
+        => new(nameof(OpenSearchProvider), message, code, null);
 
     /// <inheritdoc />
     public void Dispose()
@@ -531,16 +596,16 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
             return;
         }
 
-        // OpenSearch.Client doesn't require explicit disposal
-        // Connection pool is managed internally
+        // DI owns shared settings. Only directly constructed providers own settings here.
         _logger.LogDebug("OpenSearchProvider disposed");
 
+        (_ownedSettings as IDisposable)?.Dispose();
         _disposed = true;
     }
 
     private void AddTenantTags(Activity? activity)
     {
-        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        if (activity == null || _tenantContext?.IsResolved != true)
         {
             return;
         }
@@ -556,7 +621,7 @@ public sealed class OpenSearchProvider : ISearch, IDisposable
             { "operation", operation },
             { "result", result }
         };
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        if (_tenantContext?.IsResolved == true)
         {
             tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
         }

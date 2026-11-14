@@ -17,6 +17,7 @@
  */
 
 using System.Diagnostics;
+using Pervaxis.Genesis.Base.MultiTenancy;
 using System.Diagnostics.Metrics;
 using Amazon.SimpleEmail;
 using Amazon.SimpleEmail.Model;
@@ -48,6 +49,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
     private readonly Lazy<IAmazonSimpleNotificationService> _snsClient;
     private readonly ResiliencePipeline _resiliencePipeline;
     private bool _disposed;
+    private readonly bool _ownsClients;
 
     // Metrics
     private static readonly Counter<long> _operationsCounter = PervaxisMeter.CreateCounter<long>(
@@ -90,8 +92,9 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             throw new GenesisConfigurationException(nameof(NotificationOptions), "Invalid notification options configuration");
         }
 
-        _sesClient = new Lazy<IAmazonSimpleEmailService>(CreateSesClient);
-        _snsClient = new Lazy<IAmazonSimpleNotificationService>(CreateSnsClient);
+        _ownsClients = true;
+        _sesClient = new Lazy<IAmazonSimpleEmailService>(() => CreateSesClient(_options));
+        _snsClient = new Lazy<IAmazonSimpleNotificationService>(() => CreateSnsClient(_options));
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
             _options.Resilience,
             _logger,
@@ -100,12 +103,12 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         _logger.LogInformation(
             "AwsNotificationProvider initialized for region {Region} with sender {FromEmail}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
             _options.Region, _options.FromEmail,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
+            _tenantContext?.IsResolved == true,
             _options.Resilience.Enabled);
     }
 
     /// <summary>
-    /// Internal constructor for testing with injected clients.
+    /// Initializes a tenant scope using container-owned shared clients.
     /// </summary>
     internal AwsNotificationProvider(
         NotificationOptions options,
@@ -149,6 +152,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(subject, nameof(subject));
         ArgumentException.ThrowIfNullOrWhiteSpace(body, nameof(body));
 
+        var tenant = RequireTenant();
         try
         {
             var fromAddress = string.IsNullOrWhiteSpace(_options.FromName)
@@ -158,6 +162,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             var request = new SendEmailRequest
             {
                 Source = fromAddress,
+                Tags = [new MessageTag { Name = "TenantId", Value = tenant }],
                 Destination = new Destination { ToAddresses = [recipient] },
                 Message = new Message
                 {
@@ -173,12 +178,6 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             if (!string.IsNullOrWhiteSpace(_options.ConfigurationSetName))
             {
                 request.ConfigurationSetName = _options.ConfigurationSetName;
-            }
-
-            // Add tenant tags
-            foreach (var tag in BuildTenantTags())
-            {
-                request.Tags.Add(new MessageTag { Name = tag.Key, Value = tag.Value });
             }
 
             var response = await _resiliencePipeline.ExecuteAsync(
@@ -242,6 +241,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(templateId, nameof(templateId));
         ArgumentNullException.ThrowIfNull(templateData);
 
+        var tenant = RequireTenant();
         try
         {
             var fromAddress = string.IsNullOrWhiteSpace(_options.FromName)
@@ -254,6 +254,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             var request = new SendTemplatedEmailRequest
             {
                 Source = fromAddress,
+                Tags = [new MessageTag { Name = "TenantId", Value = tenant }],
                 Destination = new Destination { ToAddresses = [recipient] },
                 Template = templateId,
                 TemplateData = templateDataJson
@@ -323,6 +324,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(phoneNumber, nameof(phoneNumber));
         ArgumentException.ThrowIfNullOrWhiteSpace(message, nameof(message));
 
+        var tenant = RequireTenant();
         try
         {
             var request = new PublishRequest
@@ -331,20 +333,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
                 Message = message
             };
 
-            // Use topic ARN if configured for SMS delivery tracking
-            if (!string.IsNullOrWhiteSpace(_options.SmsTopicArn))
-            {
-                request.TopicArn = _options.SmsTopicArn;
-                request.PhoneNumber = null; // When using topic, don't set phone number directly
-                request.MessageAttributes = new Dictionary<string, MessageAttributeValue>
-                {
-                    ["phoneNumber"] = new MessageAttributeValue
-                    {
-                        DataType = "String",
-                        StringValue = phoneNumber
-                    }
-                };
-            }
+            request.MessageAttributes = BuildTenantAttributes(tenant);
 
             var response = await _resiliencePipeline.ExecuteAsync(
                 async ct => await _snsClient.Value.PublishAsync(request, ct),
@@ -414,6 +403,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             throw new GenesisException(nameof(AwsNotificationProvider), "PushPlatformApplicationArn is not configured");
         }
 
+        var tenant = RequireTenant();
         try
         {
             // First, create or retrieve the endpoint for the device token
@@ -436,6 +426,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             var publishRequest = new PublishRequest
             {
                 TargetArn = endpointArn,
+                MessageAttributes = BuildTenantAttributes(tenant),
                 Message = gcmMessage,
                 MessageStructure = "json"
             };
@@ -513,19 +504,24 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
     /// <summary>
     /// Creates the SES client with appropriate configuration.
     /// </summary>
-    private IAmazonSimpleEmailService CreateSesClient()
+    internal static IAmazonSimpleEmailService CreateSesClient(NotificationOptions options)
     {
+        if (!options.Validate())
+        {
+            throw new GenesisConfigurationException(nameof(NotificationOptions), "Invalid notification options configuration");
+        }
+
         var config = new AmazonSimpleEmailServiceConfig
         {
-            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(_options.Region),
-            MaxErrorRetry = _options.MaxRetries,
-            Timeout = TimeSpan.FromSeconds(_options.RequestTimeoutSeconds)
+            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(options.Region),
+            MaxErrorRetry = options.MaxRetries,
+            Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds)
         };
 
-        if (_options.UseLocalEmulator && _options.LocalEmulatorUrl is not null)
+        if (options.UseLocalEmulator && options.LocalEmulatorUrl is not null)
         {
-            config.ServiceURL = _options.LocalEmulatorUrl.AbsoluteUri;
-            config.AuthenticationRegion = _options.Region;
+            config.ServiceURL = options.LocalEmulatorUrl.AbsoluteUri;
+            config.AuthenticationRegion = options.Region;
         }
 
         return new AmazonSimpleEmailServiceClient(config);
@@ -534,19 +530,24 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
     /// <summary>
     /// Creates the SNS client with appropriate configuration.
     /// </summary>
-    private IAmazonSimpleNotificationService CreateSnsClient()
+    internal static IAmazonSimpleNotificationService CreateSnsClient(NotificationOptions options)
     {
+        if (!options.Validate())
+        {
+            throw new GenesisConfigurationException(nameof(NotificationOptions), "Invalid notification options configuration");
+        }
+
         var config = new AmazonSimpleNotificationServiceConfig
         {
-            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(_options.Region),
-            MaxErrorRetry = _options.MaxRetries,
-            Timeout = TimeSpan.FromSeconds(_options.RequestTimeoutSeconds)
+            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(options.Region),
+            MaxErrorRetry = options.MaxRetries,
+            Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds)
         };
 
-        if (_options.UseLocalEmulator && _options.LocalEmulatorUrl is not null)
+        if (options.UseLocalEmulator && options.LocalEmulatorUrl is not null)
         {
-            config.ServiceURL = _options.LocalEmulatorUrl.AbsoluteUri;
-            config.AuthenticationRegion = _options.Region;
+            config.ServiceURL = options.LocalEmulatorUrl.AbsoluteUri;
+            config.AuthenticationRegion = options.Region;
         }
 
         return new AmazonSimpleNotificationServiceClient(config);
@@ -560,12 +561,12 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             return;
         }
 
-        if (_sesClient.IsValueCreated)
+        if (_ownsClients && _sesClient.IsValueCreated)
         {
             _sesClient.Value.Dispose();
         }
 
-        if (_snsClient.IsValueCreated)
+        if (_ownsClients && _snsClient.IsValueCreated)
         {
             _snsClient.Value.Dispose();
         }
@@ -574,22 +575,20 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
         _logger.LogInformation("AwsNotificationProvider disposed");
     }
 
-    private Dictionary<string, string> BuildTenantTags()
+    private string RequireTenant()
     {
-        var tags = new Dictionary<string, string>();
-
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
-        {
-            tags["TenantId"] = _tenantContext.TenantId.Value;
-            tags["TenantName"] = _tenantContext.TenantName;
-        }
-
-        return tags;
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return TenantIsolation.RequireTenant(_tenantContext);
     }
 
+    private static Dictionary<string, MessageAttributeValue> BuildTenantAttributes(string tenant)
+        => new()
+        {
+            ["pervaxis_tenant_id"] = new() { DataType = "String", StringValue = tenant }
+        };
     private void AddTenantTags(Activity? activity)
     {
-        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        if (activity == null || _tenantContext?.IsResolved != true)
         {
             return;
         }
@@ -605,7 +604,7 @@ public sealed class AwsNotificationProvider : INotification, IDisposable
             { "operation", operation },
             { "result", result }
         };
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        if (_tenantContext?.IsResolved == true)
         {
             tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
         }

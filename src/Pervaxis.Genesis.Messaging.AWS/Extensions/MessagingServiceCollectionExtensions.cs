@@ -16,10 +16,15 @@
  ************************************************************************
  */
 
+using Amazon.SimpleNotificationService;
+using Amazon.SQS;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Pervaxis.Core.Abstractions.Genesis.Modules;
+using Pervaxis.Core.Abstractions.MultiTenancy;
 using Pervaxis.Genesis.Messaging.AWS.Options;
 using Pervaxis.Genesis.Messaging.AWS.Providers.Sns;
 using Pervaxis.Genesis.Messaging.AWS.Providers.Sqs;
@@ -31,6 +36,9 @@ namespace Pervaxis.Genesis.Messaging.AWS.Extensions;
 /// </summary>
 public static class MessagingServiceCollectionExtensions
 {
+    internal const string SqsClientKey = "Genesis.Messaging.Sqs";
+    internal const string SnsClientKey = "Genesis.Messaging.Sns";
+
     /// <summary>
     /// Registers the SQS messaging provider as <see cref="IMessaging"/>.
     /// Suitable for queue-based publish, receive, and delete workflows.
@@ -46,7 +54,8 @@ public static class MessagingServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<MessagingOptions>(configuration);
-        services.TryAddSingleton<IMessaging, SqsMessagingProvider>();
+        RegisterSqs(services);
+        services.TryAddScoped<IMessaging>(sp => sp.GetRequiredService<SqsMessagingProvider>());
 
         return services;
     }
@@ -65,14 +74,15 @@ public static class MessagingServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        services.TryAddSingleton<IMessaging, SqsMessagingProvider>();
+        RegisterSqs(services);
+        services.TryAddScoped<IMessaging>(sp => sp.GetRequiredService<SqsMessagingProvider>());
 
         return services;
     }
 
     /// <summary>
     /// Registers the SNS messaging provider as <see cref="IMessaging"/>.
-    /// Suitable for topic-based publish and subscribe workflows.
+    /// Suitable for publishing tenant-stamped messages to shared topics.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configuration">Configuration section containing messaging options.</param>
@@ -85,7 +95,8 @@ public static class MessagingServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<MessagingOptions>(configuration);
-        services.TryAddSingleton<IMessaging, SnsMessagingProvider>();
+        RegisterSns(services);
+        services.TryAddScoped<IMessaging>(sp => sp.GetRequiredService<SnsMessagingProvider>());
 
         return services;
     }
@@ -104,7 +115,8 @@ public static class MessagingServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        services.TryAddSingleton<IMessaging, SnsMessagingProvider>();
+        RegisterSns(services);
+        services.TryAddScoped<IMessaging>(sp => sp.GetRequiredService<SnsMessagingProvider>());
 
         return services;
     }
@@ -124,8 +136,10 @@ public static class MessagingServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.Configure<MessagingOptions>(configuration);
-        services.TryAddKeyedSingleton<IMessaging, SqsMessagingProvider>("sqs");
-        services.TryAddKeyedSingleton<IMessaging, SnsMessagingProvider>("sns");
+        RegisterSqs(services);
+        RegisterSns(services);
+        services.TryAddKeyedScoped<IMessaging>("sqs", (sp, _) => sp.GetRequiredService<SqsMessagingProvider>());
+        services.TryAddKeyedScoped<IMessaging>("sns", (sp, _) => sp.GetRequiredService<SnsMessagingProvider>());
 
         return services;
     }
@@ -146,9 +160,75 @@ public static class MessagingServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         services.Configure(configureOptions);
-        services.TryAddKeyedSingleton<IMessaging, SqsMessagingProvider>("sqs");
-        services.TryAddKeyedSingleton<IMessaging, SnsMessagingProvider>("sns");
+        RegisterSqs(services);
+        RegisterSns(services);
+        services.TryAddKeyedScoped<IMessaging>("sqs", (sp, _) => sp.GetRequiredService<SqsMessagingProvider>());
+        services.TryAddKeyedScoped<IMessaging>("sns", (sp, _) => sp.GetRequiredService<SnsMessagingProvider>());
 
+        return services;
+    }
+    private static void RegisterSqs(IServiceCollection services)
+    {
+        services.TryAddKeyedSingleton<IAmazonSQS>(SqsClientKey, (sp, _) =>
+            SqsMessagingProvider.CreateClient(sp.GetRequiredService<IOptions<MessagingOptions>>().Value));
+        services.TryAddScoped<SqsMessagingProvider>(sp => new SqsMessagingProvider(
+            sp.GetRequiredService<IOptions<MessagingOptions>>(),
+            sp.GetRequiredService<ILogger<SqsMessagingProvider>>(),
+            sp.GetRequiredKeyedService<IAmazonSQS>(SqsClientKey),
+            sp.GetService<ITenantContext>(), sp.GetService<TimeProvider>()));
+    }
+
+    private static void RegisterSns(IServiceCollection services)
+    {
+        services.TryAddKeyedSingleton<IAmazonSimpleNotificationService>(SnsClientKey, (sp, _) =>
+            SnsMessagingProvider.CreateClient(sp.GetRequiredService<IOptions<MessagingOptions>>().Value));
+        services.TryAddScoped<SnsMessagingProvider>(sp => new SnsMessagingProvider(
+            sp.GetRequiredService<IOptions<MessagingOptions>>(),
+            sp.GetRequiredService<ILogger<SnsMessagingProvider>>(),
+            sp.GetRequiredKeyedService<IAmazonSimpleNotificationService>(SnsClientKey),
+            sp.GetService<ITenantContext>(), sp.GetService<TimeProvider>()));
+    }
+
+    /// <summary>
+    /// Explicitly registers a trusted cross-tenant queue worker. Do not expose this
+    /// interface to tenant request handlers. Requires ITenantScopeFactory and an
+    /// ambient ITenantContext that follows the scope factory.
+    /// </summary>
+    /// <param name="services">Service collection.</param>
+    /// <param name="configureOptions">Shared messaging configuration.</param>
+    /// <returns>The service collection.</returns>
+    public static IServiceCollection AddGenesisSharedQueueConsumer(
+        this IServiceCollection services, Action<MessagingOptions> configureOptions)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configureOptions);
+        services.Configure(configureOptions);
+        return RegisterWorker(services);
+    }
+
+    /// <summary>Explicitly registers a trusted shared-queue worker from configuration.</summary>
+    /// <param name="services">Service collection.</param>
+    /// <param name="configuration">Messaging configuration section.</param>
+    /// <returns>The service collection.</returns>
+    public static IServiceCollection AddGenesisSharedQueueConsumer(
+        this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        services.Configure<MessagingOptions>(configuration);
+        return RegisterWorker(services);
+    }
+
+    private static IServiceCollection RegisterWorker(IServiceCollection services)
+    {
+        RegisterSqs(services);
+        services.TryAddScoped<ISharedQueueConsumer>(sp => new SqsMessagingProvider(
+            sp.GetRequiredService<IOptions<MessagingOptions>>(),
+            sp.GetRequiredService<ILogger<SqsMessagingProvider>>(),
+            sp.GetRequiredKeyedService<IAmazonSQS>(SqsClientKey),
+            sp.GetRequiredService<ITenantContext>(), sp.GetService<TimeProvider>(),
+            sp.GetRequiredService<ITenantScopeFactory>(), sharedConsumer: true,
+            serviceScopeFactory: sp.GetRequiredService<IServiceScopeFactory>()));
         return services;
     }
 }

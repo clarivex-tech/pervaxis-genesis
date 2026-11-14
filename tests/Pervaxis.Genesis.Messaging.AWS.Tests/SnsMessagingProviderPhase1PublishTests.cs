@@ -238,73 +238,12 @@ public class SnsMessagingProviderPhase1PublishTests
                 "tenant-scoped publishes should never use the platform marker");
     }
 
-    // ── Raw Message Delivery Tests ───────────────────────────────────────────
-
-    /// <summary>
-    /// Verifies that SubscribeAsync sets RawMessageDelivery=true for SQS subscriptions.
-    /// This ensures message attributes (including pervaxis_tenant_id) are passed through.
-    /// </summary>
     [Fact]
-    public async Task SubscribeAsync_SqsEndpoint_EnablesRawMessageDelivery()
+    public async Task SubscribeAsync_WithoutTenant_FailsBeforeAws()
     {
-        // Arrange
-        var mockTenantContext = new Mock<ITenantContext>();
-        mockTenantContext.Setup(t => t.IsResolved).Returns(true);
-        mockTenantContext.Setup(t => t.TenantId).Returns(new TenantId("acme"));
-
-        var provider = CreateProvider(tenantContext: mockTenantContext.Object);
-
-        SubscribeRequest? capturedRequest = null;
-        _mockSns
-            .Setup(s => s.SubscribeAsync(It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<SubscribeRequest, CancellationToken>((req, ct) => capturedRequest = req)
-            .ReturnsAsync(new SubscribeResponse { SubscriptionArn = "arn:aws:sns:ap-south-1:123:my-topic:sub-123" });
-
-        // Act
-        var sqsQueueArn = "arn:aws:sqs:ap-south-1:123456789012:orders-shared";
-        var result = await provider.SubscribeAsync("notifications", sqsQueueArn);
-
-        // Assert
-        result.Should().NotBeNullOrWhiteSpace();
-        capturedRequest.Should().NotBeNull();
-        capturedRequest!.Protocol.Should().Be("sqs");
-        capturedRequest.Attributes.Should().ContainKey("RawMessageDelivery");
-        capturedRequest.Attributes["RawMessageDelivery"].Should().Be("true");
+        await Assert.ThrowsAsync<GenesisException>(() => CreateProvider().SubscribeAsync("events", "https://example.com/hook"));
+        _mockSns.Verify(c => c.SubscribeAsync(It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
-
-    /// <summary>
-    /// Verifies that non-SQS subscriptions don't set RawMessageDelivery (not applicable).
-    /// </summary>
-    [Fact]
-    public async Task SubscribeAsync_HttpsEndpoint_DoesNotSetRawMessageDelivery()
-    {
-        // Arrange
-        var mockTenantContext = new Mock<ITenantContext>();
-        mockTenantContext.Setup(t => t.IsResolved).Returns(true);
-        mockTenantContext.Setup(t => t.TenantId).Returns(new TenantId("acme"));
-
-        var provider = CreateProvider(tenantContext: mockTenantContext.Object);
-
-        SubscribeRequest? capturedRequest = null;
-        _mockSns
-            .Setup(s => s.SubscribeAsync(It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<SubscribeRequest, CancellationToken>((req, ct) => capturedRequest = req)
-            .ReturnsAsync(new SubscribeResponse { SubscriptionArn = "arn:aws:sns:ap-south-1:123:my-topic:sub-456" });
-
-        // Act
-        var httpsEndpoint = "https://api.example.com/webhook";
-        var result = await provider.SubscribeAsync("notifications", httpsEndpoint);
-
-        // Assert
-        result.Should().NotBeNullOrWhiteSpace();
-        capturedRequest.Should().NotBeNull();
-        capturedRequest!.Protocol.Should().Be("https");
-        // RawMessageDelivery should not be set for non-SQS protocols
-        capturedRequest.Attributes.Should().NotContainKey("RawMessageDelivery");
-    }
-
-    // ── Batch Publish Tests ──────────────────────────────────────────────────
-
     /// <summary>
     /// Verifies that batch publish stamps tenant attributes on all messages.
     /// </summary>

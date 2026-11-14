@@ -29,6 +29,7 @@ using Pervaxis.Core.Observability.Tracing;
 using Pervaxis.Genesis.Base.Exceptions;
 using Pervaxis.Genesis.Base.Resilience;
 using Pervaxis.Genesis.Caching.AWS.Options;
+using Pervaxis.Genesis.Caching.AWS.Security;
 using StackExchange.Redis;
 
 namespace Pervaxis.Genesis.Caching.AWS.Providers.ElastiCache;
@@ -37,12 +38,15 @@ namespace Pervaxis.Genesis.Caching.AWS.Providers.ElastiCache;
 /// ElastiCache (Redis) implementation of the caching provider.
 /// Supports AWS ElastiCache Redis clusters and local Redis instances.
 /// </summary>
-public sealed class ElastiCacheProvider : ICache, IDisposable
+public sealed class ElastiCacheProvider : ICache
 {
     private readonly CachingOptions _options;
     private readonly ILogger<ElastiCacheProvider> _logger;
     private readonly ITenantContext? _tenantContext;
-    private readonly Lazy<IConnectionMultiplexer> _connection;
+    private readonly IConnectionMultiplexer _connection;
+    private readonly TenantCacheKeyResolver _keyResolver;
+    private readonly object _tenantLock = new();
+    private string? _boundTenantKey;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ResiliencePipeline _resiliencePipeline;
 
@@ -67,71 +71,45 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         "ms",
         "Duration of cache operations in milliseconds");
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ElastiCacheProvider"/> class.
-    /// </summary>
-    /// <param name="options">Caching configuration options.</param>
-    /// <param name="logger">Logger instance.</param>
-    /// <param name="tenantContext">Optional tenant context for multi-tenancy support.</param>
+    /// <summary>Creates a scoped provider using the shared, DI-owned Redis connection.</summary>
+    /// <param name="options">Caching configuration.</param>
+    /// <param name="logger">Logger.</param>
+    /// <param name="connection">Shared connection owned by the container.</param>
+    /// <param name="tenantContext">Current tenant context.</param>
     public ElastiCacheProvider(
-        IOptions<CachingOptions> options,
-        ILogger<ElastiCacheProvider> logger,
-        ITenantContext? tenantContext = null)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(logger);
-
-        _options = options.Value;
-        _logger = logger;
-        _tenantContext = tenantContext;
-
-        ValidateOptions();
-
-        _connection = new Lazy<IConnectionMultiplexer>(CreateConnection);
-        _jsonOptions = BuildJsonOptions();
-        _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
-            _options.Resilience,
-            _logger,
-            "ElastiCache");
-
-        _logger.LogInformation(
-            "ElastiCacheProvider initialized with database {Database}, tenant isolation: {TenantIsolation}, resilience: {Resilience}",
-            _options.Database,
-            _options.EnableTenantIsolation && _tenantContext?.IsResolved == true,
-            _options.Resilience.Enabled);
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ElastiCacheProvider"/> class
-    /// with an explicit connection — intended for unit testing only.
-    /// </summary>
-    internal ElastiCacheProvider(
         IOptions<CachingOptions> options,
         ILogger<ElastiCacheProvider> logger,
         IConnectionMultiplexer connection,
         ITenantContext? tenantContext = null)
+        : this(options, logger, connection, tenantContext, new TenantCacheKeyResolver(tenantContext))
+    {
+    }
+
+    internal ElastiCacheProvider(
+        IOptions<CachingOptions> options,
+        ILogger<ElastiCacheProvider> logger,
+        IConnectionMultiplexer connection,
+        ITenantContext? tenantContext,
+        TenantCacheKeyResolver keyResolver)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(connection);
-
         _options = options.Value;
         _logger = logger;
         _tenantContext = tenantContext;
-
+        _keyResolver = keyResolver;
         ValidateOptions();
-
-        _connection = new Lazy<IConnectionMultiplexer>(() => connection);
+        _connection = connection;
         _jsonOptions = BuildJsonOptions();
         _resiliencePipeline = GenesisResiliencePipelineBuilder.BuildPipeline(
-            _options.Resilience,
-            _logger,
-            "ElastiCache");
+            _options.Resilience, _logger, "ElastiCache");
     }
 
     /// <inheritdoc/>
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.get", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
@@ -206,6 +184,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.set", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
@@ -216,8 +195,8 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         ArgumentNullException.ThrowIfNull(value);
 
         var fullKey = GetFullKey(key);
+        var effectiveExpiry = GetEffectiveExpiry(expiry);
         var db = GetDatabase();
-        var effectiveExpiry = expiry ?? _options.DefaultExpiry;
 
         try
         {
@@ -272,6 +251,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.remove", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
@@ -332,6 +312,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
     /// <inheritdoc/>
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.exists", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
@@ -389,6 +370,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         IEnumerable<string> keys,
         CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.get_many", ActivityKind.Client);
         activity?.SetTag("cache.operation", "get_many");
@@ -402,8 +384,8 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
             return new Dictionary<string, T?>();
         }
 
-        var db = GetDatabase();
         var fullKeys = keyList.Select(GetFullKey).ToArray();
+        var db = GetDatabase();
         var redisKeys = fullKeys.Select(k => (RedisKey)k).ToArray();
 
         try
@@ -462,19 +444,22 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.set_many", ActivityKind.Client);
         activity?.SetTag("cache.operation", "set_many");
         AddTenantTags(activity);
         ArgumentNullException.ThrowIfNull(items);
 
-        if (items.Count == 0)
+        var effectiveExpiry = GetEffectiveExpiry(expiry);
+        var resolvedItems = items.Select(item => new KeyValuePair<string, string>(
+            GetFullKey(item.Key), Serialize(item.Value))).ToArray();
+        if (resolvedItems.Length == 0)
         {
             return true;
         }
 
         var db = GetDatabase();
-        var effectiveExpiry = expiry ?? _options.DefaultExpiry;
 
         try
         {
@@ -483,11 +468,9 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
                 var batch = db.CreateBatch();
                 var tasks = new List<Task<bool>>();
 
-                foreach (var item in items)
+                foreach (var item in resolvedItems)
                 {
-                    var fullKey = GetFullKey(item.Key);
-                    var serialized = Serialize(item.Value);
-                    tasks.Add(batch.StringSetAsync(fullKey, serialized, effectiveExpiry));
+                    tasks.Add(batch.StringSetAsync(item.Key, item.Value, effectiveExpiry));
                 }
 
                 batch.Execute();
@@ -546,6 +529,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         TimeSpan? expiry = null,
         CancellationToken cancellationToken = default)
     {
+        EnsureTenantUnchanged();
         var stopwatch = Stopwatch.StartNew();
         using var activity = PervaxisActivitySource.StartActivity("cache.refresh", ActivityKind.Client);
         activity?.SetTag("cache.key", key);
@@ -555,8 +539,8 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
         var fullKey = GetFullKey(key);
+        var effectiveExpiry = GetEffectiveExpiry(expiry);
         var db = GetDatabase();
-        var effectiveExpiry = expiry ?? _options.DefaultExpiry;
 
         try
         {
@@ -607,84 +591,44 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
         }
     }
 
-    /// <summary>
-    /// Disposes the Redis connection.
-    /// </summary>
-    public void Dispose()
-    {
-        if (_connection.IsValueCreated)
-        {
-            _connection.Value.Dispose();
-            _logger.LogInformation("ElastiCacheProvider connection disposed");
-        }
-    }
-
     private void ValidateOptions()
     {
         if (!_options.Validate())
         {
-            throw new GenesisConfigurationException(
-                nameof(ElastiCacheProvider),
-                "Invalid caching configuration");
+            throw new GenesisConfigurationException(nameof(ElastiCacheProvider), "Invalid caching configuration");
         }
     }
 
-    private IConnectionMultiplexer CreateConnection()
+    private IDatabase GetDatabase() => _connection.GetDatabase(_options.Database);
+
+    private void EnsureTenantUnchanged()
     {
-        var configOptions = ConfigurationOptions.Parse(_options.ConnectionString);
-        configOptions.ConnectTimeout = _options.ConnectTimeoutMs;
-        configOptions.SyncTimeout = _options.SyncTimeoutMs;
-        configOptions.AbortOnConnectFail = _options.AbortOnConnectFail;
-        configOptions.Ssl = _options.UseSsl;
-
-        if (_options.UseLocalEmulator)
+        var tenantKey = _keyResolver.ResolveKey("scope-guard");
+        lock (_tenantLock)
         {
-            configOptions.Ssl = false;
-            _logger.LogInformation("Using local emulator mode - SSL disabled");
+            if (_boundTenantKey is not null && !StringComparer.Ordinal.Equals(_boundTenantKey, tenantKey))
+            {
+                throw new GenesisException(nameof(ElastiCacheProvider),
+                    "Tenant context changed during the provider scope.", "TenantContextChanged", null);
+            }
+            _boundTenantKey = tenantKey;
         }
-
-        _logger.LogInformation("Connecting to Redis: {Endpoint}", configOptions.EndPoints[0]);
-
-        return ConnectionMultiplexer.Connect(configOptions);
     }
-
-    private IDatabase GetDatabase() => _connection.Value.GetDatabase(_options.Database);
 
     private string GetFullKey(string key)
     {
-        var parts = new List<string>();
-
-        // Add environment/key prefix if configured
-        if (!string.IsNullOrEmpty(_options.KeyPrefix))
-        {
-            parts.Add(_options.KeyPrefix);
-        }
-
-        // Add tenant prefix if isolation is enabled and tenant context is available
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
-        {
-            parts.Add($"tenant:{_tenantContext.TenantId.Value}");
-        }
-
-        // Sanitize user-provided key to prevent key injection attacks
-        var sanitizedKey = SanitizeCacheKey(key);
-        parts.Add(sanitizedKey);
-
-        return string.Join(":", parts);
+        var tenantKey = _keyResolver.ResolveKey(key);
+        return string.IsNullOrEmpty(_options.KeyPrefix) ? tenantKey : _options.KeyPrefix + ":" + tenantKey;
     }
 
-    /// <summary>
-    /// Sanitizes cache keys to prevent injection attacks by removing/replacing control characters.
-    /// Replaces colons (:) with underscores to prevent tenant isolation bypass.
-    /// </summary>
-    private static string SanitizeCacheKey(string key)
+    private TimeSpan GetEffectiveExpiry(TimeSpan? expiry)
     {
-        // Replace control characters that could interfere with key structure
-        return key
-            .Replace(":", "_", StringComparison.Ordinal)      // Prevent key structure manipulation
-            .Replace("\n", "", StringComparison.Ordinal)      // Remove newlines
-            .Replace("\r", "", StringComparison.Ordinal)      // Remove carriage returns
-            .Replace("\t", "_", StringComparison.Ordinal);    // Replace tabs with underscores
+        var effectiveExpiry = expiry ?? _options.DefaultExpiry;
+        if (effectiveExpiry <= TimeSpan.Zero || effectiveExpiry > _options.MaxTtl)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expiry), "Expiry must be positive and no greater than MaxTtl.");
+        }
+        return effectiveExpiry;
     }
 
     private string Serialize<T>(T value) => JsonSerializer.Serialize(value, _jsonOptions);
@@ -699,7 +643,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
 
     private void AddTenantTags(Activity? activity)
     {
-        if (activity == null || !_options.EnableTenantIsolation || _tenantContext?.IsResolved != true)
+        if (activity == null || _tenantContext?.IsResolved != true)
         {
             return;
         }
@@ -716,7 +660,7 @@ public sealed class ElastiCacheProvider : ICache, IDisposable
             { "result", result }
         };
 
-        if (_options.EnableTenantIsolation && _tenantContext?.IsResolved == true)
+        if (_tenantContext?.IsResolved == true)
         {
             tags.Add("tenant_id", _tenantContext.TenantId.Value.ToString());
         }

@@ -74,7 +74,7 @@ public static class FeatureFlagServiceCollectionExtensions
     private static void RegisterCoreServices(IServiceCollection services)
     {
         // Register Microsoft.FeatureManagement with built-in + custom filters
-        services.AddFeatureManagement()
+        services.AddScopedFeatureManagement()
             .AddFeatureFilter<TenantFilter>();
 
         // Register state tracker as singleton

@@ -140,7 +140,7 @@ public class NotificationServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void AddGenesisNotifications_ShouldRegisterAsSingleton()
+    public void AddGenesisNotifications_ShouldRegisterAsScoped()
     {
         // Arrange
         var services = new ServiceCollection();
@@ -158,7 +158,7 @@ public class NotificationServiceCollectionExtensionsTests
         // Assert
         var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(INotification));
         descriptor.Should().NotBeNull();
-        descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
+        descriptor!.Lifetime.Should().Be(ServiceLifetime.Scoped);
     }
 
     [Fact]

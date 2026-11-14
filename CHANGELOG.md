@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Secrets and Parameters: reconstructed source and basic tenant isolation
+
+- Restore buildable contract/AWS projects for Secrets Manager and Parameter Store
+  from surviving API documentation, with new tests and NuGet packaging entries.
+- Tenant reads always use trusted tenant prefixes and scoped providers sharing
+  container-owned SDK clients and tenant-aware caches. Missing tenant context,
+  unsafe names and disabled isolation fail before access.
+- Support string/JSON/binary secret reads and string/JSON/paginated parameter reads.
+  Not-found returns null; service errors and cancellation propagate. Single-value
+  reads have configurable TTL caching; parameter hierarchy reads are not cached.
+- Platform startup access requires separate explicit registration without tenant
+  context. Tenant registration cannot access platform values.
+- **Breaking:** former scope-switch overloads and configurable path/KMS templates
+  are not restored. Use the platform interfaces for startup values and provision
+  data under the documented fixed prefixes. No automatic migration is performed.
+
+### Basic shared-resource tenancy
+
+- Notifications require tenant context and stamp every SES/SNS send. Providers are
+  Scoped with shared SDK clients; SMS always targets the requested phone number.
+- Idempotency validates tenant arguments and record ownership through a Scoped
+  store wrapping a shared backend. The HTTP filter rejects missing tenant context.
+- Transaction logging requires tenant-owned DynamoDB/S3 keys, constrains lookup
+  requests, and awaits HTTP persistence within the tenant scope. Unresolved HTTP
+  requests skip logging; existing read API placeholders remain deferred.
+- Feature managers and snapshots evaluate shared definitions within tenant scopes.
+- **Breaking:** callers must establish trusted tenant scopes; legacy isolation
+  switches cannot disable these boundaries. Notification recipient authorization
+  remains the application's responsibility. See the package tenancy sections.
+
+### Messaging (`Pervaxis.Genesis.Messaging.AWS`): shared-resource tenant enforcement
+
+- SQS/SNS providers are Scoped and use keyed, container-owned Singleton AWS clients.
+- Single/batch publication requires a valid, stable tenant, including empty batches;
+  the reserved tenant attribute is stamped from execution context. Disabling isolation
+  is rejected in every environment.
+- Tenant receives expose only matching messages; acknowledgement requires a receipt
+  received for that tenant and queue by the same provider scope.
+- Explicit `ISharedQueueConsumer` registration processes shared queues outside tenant
+  requests, with separate tenant and async DI scopes per message. Handler failures,
+  context mismatches and cancellation leave messages unacknowledged.
+- Invalid envelopes/payloads are quarantined before acknowledgement. Missing/failing
+  DLQs preserve the source message.
+- **Breaking:** shared-topic subscriptions must be provisioned by the platform;
+  tenant `SubscribeAsync` is disabled. Provider lifetimes, receive/acknowledgement
+  ownership and worker registration requirements have changed. See the
+  [Messaging guide](src/Pervaxis.Genesis.Messaging.AWS/README.md).
+
+### Search (`Pervaxis.Genesis.Search.AWS`): shared-index tenant isolation
+
+- All tenants share each logical index. Index and bulk writes stamp a reserved
+  `tenantId`; document IDs are namespaced by tenant for writes and deletes.
+- Searches always include an exact tenant filter on `tenantId.keyword`.
+- Missing, invalid or changed tenant contexts fail closed, including empty bulk
+  calls. The legacy isolation flag cannot disable enforcement.
+- Providers are Scoped; keyed OpenSearch clients and settings are Singleton.
+- **Breaking:** index names, document IDs and DI lifetimes change. Existing data
+  is not migrated automatically. Provision the exact keyword mapping and follow
+  the [deployment notes](src/Pervaxis.Genesis.Search.AWS/README.md).
+- Ingest pipeline management and reindexing remain outside this change.
+
 ### FileStorage (`Pervaxis.Genesis.FileStorage.AWS`): tenant isolation hardening
 
 See [ADR-0001](docs/architecture/ADR-0001-filestorage-tenant-isolation.md) for the full model.
